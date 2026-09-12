@@ -11,7 +11,7 @@ import { useAuth } from '@/components/providers/auth-provider'
 import { QtyStepper } from '@/components/apna/qty-stepper'
 import { rupees } from '@/lib/format'
 import { RESTAURANT } from '@/lib/constants'
-import { computeDeliveryCharge, checkOrderEligibility, remainingForFreeDelivery, MIN_ORDER_SUBTOTAL, FAR_DISTANCE_THRESHOLD_KM, FAR_MIN_ORDER_SUBTOTAL, FREE_DELIVERY_OVERRIDE } from '@/lib/delivery'
+import { deliveryChargeForDistance, checkOrderEligibility, remainingForFreeDelivery, MIN_ORDER_SUBTOTAL, FAR_DISTANCE_THRESHOLD_KM, FAR_MIN_ORDER_SUBTOTAL, FREE_DELIVERY_OVERRIDE } from '@/lib/delivery'
 import type { Address } from '@/lib/types'
 
 export function CartView() {
@@ -50,21 +50,28 @@ export function CartView() {
   // source of truth for the stored charge, but we mirror it here so the
   // cart preview matches what the customer will actually pay.
   //
-  // If no address is chosen yet, we can't compute distance — show a
-  // placeholder message prompting the user to select an address.
+  // IMPORTANT: The delivery fee is ALWAYS shown (never "Not available"),
+  // even when the order is below the minimum threshold. The fee is a
+  // function of DISTANCE only — it doesn't depend on whether the minimum
+  // is met. The minimum only affects whether the Place Order button is
+  // enabled and whether the nudge banner is shown.
   const distanceKm = chosen?.distanceKm ?? null
-  const deliveryCalc =
-    distanceKm != null
-      ? computeDeliveryCharge(distanceKm, subtotal)
-      : null
-  const deliveryFee = deliveryCalc?.finalCharge ?? 0
-  const total = subtotal + deliveryFee
   const eligibility =
     distanceKm != null ? checkOrderEligibility(distanceKm, subtotal) : null
   const isBlocked = eligibility != null && !eligibility.eligible
+
+  // Compute the delivery fee INDEPENDENTLY of eligibility.
+  // - If distance is known: use deliveryChargeForDistance(distanceKm)
+  //   (this is the pure distance-based charge, ₹20-₹70, before the ₹2000
+  //   free override). Then check if the ₹2000 override applies.
+  // - If no address selected yet: fee is 0 (and we show "Select address").
+  const baseDeliveryFee =
+    distanceKm != null ? deliveryChargeForDistance(distanceKm) : 0
+  const hasFreeDelivery = distanceKm != null && subtotal >= FREE_DELIVERY_OVERRIDE
+  const deliveryFee = hasFreeDelivery ? 0 : baseDeliveryFee
+  const total = subtotal + deliveryFee
   const remainingForFree =
     distanceKm != null ? remainingForFreeDelivery(distanceKm, subtotal) : null
-  const hasFreeDelivery = deliveryCalc?.isFree === true
 
   function checkout() {
     // Don't bounce to login while the initial session check is still in
@@ -262,12 +269,12 @@ export function CartView() {
             </div>
           )}
 
-          {/* Bill details — only item subtotal + delivery charge + total.
-              When the order is blocked (below ₹200 min, or below ₹800 min for
-              7km+), the Delivery Fee line shows "Not available" instead of
-              "FREE" — because delivery is NOT free, it's unavailable. The
-              To Pay line shows just the subtotal (no delivery added) since
-              the order cannot be placed yet. */}
+          {/* Bill details — Item Total + Delivery Fee + To Pay.
+              The delivery fee is ALWAYS shown as soon as an address is selected,
+              even when the order is below the minimum threshold. The fee is a
+              function of DISTANCE only — it doesn't depend on eligibility.
+              "Not available" is NEVER shown — the fee number is always visible
+              so the customer knows what they'll pay when they meet the minimum. */}
           <section className="rounded-2xl border border-border/60 bg-card p-4 shadow-sm">
             <h3 className="mb-3 text-sm font-bold text-foreground">Bill Details</h3>
             <dl className="flex flex-col gap-2 text-sm">
@@ -280,18 +287,14 @@ export function CartView() {
                 <dd className="font-semibold text-foreground">
                   {distanceKm == null
                     ? 'Select address'
-                    : isBlocked
-                    ? <span className="text-amber-600">Not available</span>
-                    : deliveryFee === 0
+                    : hasFreeDelivery
                     ? <span className="text-emerald-600">FREE</span>
                     : rupees(deliveryFee)}
                 </dd>
               </div>
               <div className="mt-1 flex justify-between border-t border-border pt-2">
                 <dt className="font-bold text-foreground">To Pay</dt>
-                <dd className="text-lg font-extrabold text-brand">
-                  {isBlocked ? rupees(subtotal) : rupees(total)}
-                </dd>
+                <dd className="text-lg font-extrabold text-brand">{rupees(total)}</dd>
               </div>
             </dl>
           </section>

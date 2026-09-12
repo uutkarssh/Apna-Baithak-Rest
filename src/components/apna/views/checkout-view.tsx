@@ -19,7 +19,7 @@ import { useCart } from '@/store/cart'
 import { useAuth } from '@/components/providers/auth-provider'
 import { rupees } from '@/lib/format'
 import { PAYMENT_MODES, RESTAURANT } from '@/lib/constants'
-import { computeDeliveryCharge, checkOrderEligibility } from '@/lib/delivery'
+import { deliveryChargeForDistance, checkOrderEligibility, FREE_DELIVERY_OVERRIDE } from '@/lib/delivery'
 import type { Address } from '@/lib/types'
 import { toast } from 'sonner'
 import type { Order } from '@/lib/types'
@@ -85,20 +85,24 @@ export function CheckoutView() {
   // checkout preview matches what the customer will pay. The server will
   // recompute and validate this on submission — a client cannot bypass it.
   //
-  // If the order is ineligible (below ₹200 min, or below ₹800 min for 7km+),
-  // the Place Order button is HARD-DISABLED with the block message shown —
-  // not just a soft warning after clicking.
+  // IMPORTANT: The delivery fee is ALWAYS shown (never "Not available"),
+  // even when the order is below the minimum threshold. The fee is a
+  // function of DISTANCE only. The minimum only affects whether the Place
+  // Order button is enabled and whether the block banner is shown.
   const distanceKm = chosen?.distanceKm ?? null
-  const deliveryCalc =
-    distanceKm != null ? computeDeliveryCharge(distanceKm, subtotal) : null
-  const deliveryFee = deliveryCalc?.finalCharge ?? 0
-  const total = subtotal + deliveryFee
   const eligibility =
     distanceKm != null ? checkOrderEligibility(distanceKm, subtotal) : null
   const isBlocked = eligibility != null && !eligibility.eligible
   const blockMessage = isBlocked && eligibility && !eligibility.eligible
     ? eligibility.message
     : null
+
+  // Compute the delivery fee INDEPENDENTLY of eligibility.
+  const baseDeliveryFee =
+    distanceKm != null ? deliveryChargeForDistance(distanceKm) : 0
+  const hasFreeDelivery = distanceKm != null && subtotal >= FREE_DELIVERY_OVERRIDE
+  const deliveryFee = hasFreeDelivery ? 0 : baseDeliveryFee
+  const total = subtotal + deliveryFee
 
   async function placeOrder() {
     if (authLoading) {
@@ -276,18 +280,14 @@ export function CheckoutView() {
               <dd className="font-semibold text-foreground">
                 {distanceKm == null
                   ? 'Select address'
-                  : isBlocked
-                  ? <span className="text-amber-600">Not available</span>
-                  : deliveryFee === 0
+                  : hasFreeDelivery
                   ? <span className="text-emerald-600">FREE</span>
                   : rupees(deliveryFee)}
               </dd>
             </div>
             <div className="mt-1 flex justify-between border-t border-border pt-2">
               <dt className="font-bold text-foreground">To Pay</dt>
-              <dd className="text-lg font-extrabold text-brand">
-                {isBlocked ? rupees(subtotal) : rupees(total)}
-              </dd>
+              <dd className="text-lg font-extrabold text-brand">{rupees(total)}</dd>
             </div>
           </dl>
         </section>

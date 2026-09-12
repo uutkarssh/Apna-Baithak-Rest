@@ -151,23 +151,31 @@ export function checkOrderEligibility(
   distanceKm: number,
   subtotal: number
 ): EligibilityResult {
-  // Step 1a: universal minimum
-  if (subtotal < MIN_ORDER_SUBTOTAL) {
-    return {
-      eligible: false,
-      reason: 'BELOW_MIN_SUBTOTAL',
-      message: `Minimum order for delivery is ₹${MIN_ORDER_SUBTOTAL}.`,
-      remaining: MIN_ORDER_SUBTOTAL - subtotal,
-    }
-  }
+  // === DISTANCE-FIRST eligibility (fixes wrong-message-priority bug) ===
+  // A customer beyond 7km must NEVER see the ₹200 message — from their very
+  // first item in the cart, they should see the ₹800 message directly.
+  // So we check the far-distance minimum FIRST, before the universal ₹200.
 
-  // Step 1b: far-distance minimum
+  // Step 1a: far-distance minimum (distance > 7km → ₹800 min)
   if (distanceKm > FAR_DISTANCE_THRESHOLD_KM && subtotal < FAR_MIN_ORDER_SUBTOTAL) {
     return {
       eligible: false,
       reason: 'BELOW_FAR_MIN_SUBTOTAL',
       message: `Orders beyond ${FAR_DISTANCE_THRESHOLD_KM}km require a minimum order of ₹${FAR_MIN_ORDER_SUBTOTAL}.`,
       remaining: FAR_MIN_ORDER_SUBTOTAL - subtotal,
+    }
+  }
+
+  // Step 1b: universal minimum (0-7km → ₹200 min)
+  // Only checked if the far-distance check didn't apply (i.e. distance <= 7km
+  // OR distance > 7km but subtotal >= 800, in which case the order is already
+  // eligible past the far check and this ₹200 check is trivially satisfied).
+  if (subtotal < MIN_ORDER_SUBTOTAL) {
+    return {
+      eligible: false,
+      reason: 'BELOW_MIN_SUBTOTAL',
+      message: `Minimum order for delivery is ₹${MIN_ORDER_SUBTOTAL}.`,
+      remaining: MIN_ORDER_SUBTOTAL - subtotal,
     }
   }
 
