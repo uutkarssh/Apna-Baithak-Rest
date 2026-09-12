@@ -255,3 +255,22 @@ model PaymentAttempt {
   @@index([geminiExtractedUtr])
   @@map("payment_attempts")
 }
+
+// ===== Restaurant Config (singleton) =====
+// A single-row table (id is always 1) holding global restaurant-wide settings
+// that the admin can toggle live from the dashboard — no redeploy required.
+//
+// Currently holds:
+//   isAcceptingOrders — when false, the checkout API rejects all new orders
+//   with a 503 "orders paused" response. The customer-facing UI shows a calm
+//   "We'll be back soon" message instead of an error.
+//
+// To add more settings later, add columns here. The public /api/settings
+// route only exposes isAcceptingOrders — nothing else is publicly readable.
+model RestaurantConfig {
+  id                Int      @id @default(1)
+  isAcceptingOrders Boolean  @default(true)
+  updatedAt         DateTime @updatedAt
+
+  @@map("restaurant_config")
+}

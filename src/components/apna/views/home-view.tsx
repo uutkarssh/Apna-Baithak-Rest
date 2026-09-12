@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import Image from 'next/image'
-import { Search, Star, Clock, MapPin, UtensilsCrossed } from 'lucide-react'
+import { Search, Star, Clock, MapPin, UtensilsCrossed, AlertCircle } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useApp } from '@/store/app'
 import { ItemCard } from '@/components/apna/item-card'
@@ -14,6 +14,20 @@ import type { Category, MenuItem } from '@/lib/types'
 export function HomeView() {
   const openCategory = useApp((s) => s.openCategory)
   const setView = useApp((s) => s.setView)
+
+  // Fetch the restaurant's order-acceptance status. When false, we show a
+  // calm banner at the top of the homepage so customers know before they
+  // even build a cart. The hard block still exists at /api/checkout.
+  const { data: settingsData } = useQuery({
+    queryKey: ['restaurant-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings')
+      if (!res.ok) return { isAcceptingOrders: true as const }
+      return res.json() as Promise<{ isAcceptingOrders: boolean }>
+    },
+    refetchInterval: 30_000,
+  })
+  const isAcceptingOrders = settingsData?.isAcceptingOrders ?? true
 
   const { data: catData, isLoading: catsLoading } = useQuery({
     queryKey: ['categories'],
@@ -62,6 +76,23 @@ export function HomeView() {
           <span className="text-sm text-muted-foreground">Search for pizzas, burgers, chaat…</span>
         </button>
       </div>
+
+      {/* Calm "we'll be back soon" banner — shown when the admin has paused
+          orders. This is a friendly heads-up so customers know before they
+          build a cart. The hard block still exists at /api/checkout. */}
+      {!isAcceptingOrders && (
+        <div className="px-4 sm:px-0">
+          <div className="flex items-start gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-blue-900">
+            <Clock className="mt-0.5 h-5 w-5 shrink-0 text-blue-500" />
+            <div>
+              <p className="text-sm font-bold">We're currently closed</p>
+              <p className="mt-1 text-xs leading-relaxed text-blue-700">
+                We'll be back soon! Please check back in a little while. Thank you for your patience.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Categories — horizontal rail on mobile, responsive grid on >= sm */}
       <section className="px-4 sm:px-0">

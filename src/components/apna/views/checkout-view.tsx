@@ -2,7 +2,7 @@
 import { authedFetch } from '@/components/providers/providers'
 
 import { useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   MapPin,
@@ -12,6 +12,7 @@ import {
   Loader2,
   ArrowRight,
   AlertCircle,
+  Clock,
 } from 'lucide-react'
 import { useApp } from '@/store/app'
 import { useCart } from '@/store/cart'
@@ -36,6 +37,23 @@ export function CheckoutView() {
   const [paymentMode, setPaymentMode] = useState<'COD' | 'UPI'>('COD')
   const [notes, setNotes] = useState('')
   const [placing, setPlacing] = useState(false)
+  const qc = useQueryClient()
+
+  // Fetch the restaurant's order-acceptance status. This is a public endpoint
+  // that only exposes isAcceptingOrders (nothing else). When false, we show
+  // a calm "We'll be back soon" message and disable the Place Order button.
+  const { data: settingsData } = useQuery({
+    queryKey: ['restaurant-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings')
+      if (!res.ok) return { isAcceptingOrders: true as const }
+      return res.json() as Promise<{ isAcceptingOrders: boolean }>
+    },
+    // Poll every 30s so the customer sees the updated state shortly after
+    // the admin toggles it (without needing a manual refresh).
+    refetchInterval: 30_000,
+  })
+  const isAcceptingOrders = settingsData?.isAcceptingOrders ?? true
 
   const { data } = useQuery({
     queryKey: ['addresses'],
@@ -119,6 +137,15 @@ export function CheckoutView() {
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
+        // If orders are paused (503 + ORDERS_PAUSED code), the calm banner
+        // is already shown by the isAcceptingOrders check above. Don't show
+        // a scary toast — just silently fail. The UI already reflects the
+        // state via the disabled button + "We'll be back soon" message.
+        if (j?.code === 'ORDERS_PAUSED' || res.status === 503) {
+          // Refetch the setting so the banner appears immediately
+          qc.invalidateQueries({ queryKey: ['restaurant-settings'] })
+          return
+        }
         throw new Error(j.error || 'Failed to place order')
       }
       const { order } = (await res.json()) as { order: Order }
@@ -265,11 +292,29 @@ export function CheckoutView() {
           </dl>
         </section>
 
+        {/* Calm "We'll be back soon" banner — shown when the admin has paused
+            orders. This is NOT an error state — it's a friendly temporary-closure
+            message. The Place Order button is also disabled below. This takes
+            priority over the eligibility block banner (if orders are paused,
+            we show this instead of the ₹200/₹800 message). */}
+        {!isAcceptingOrders && (
+          <div className="flex items-start gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-blue-900">
+            <Clock className="mt-0.5 h-5 w-5 shrink-0 text-blue-500" />
+            <div>
+              <p className="text-sm font-bold">We're currently closed</p>
+              <p className="mt-1 text-xs leading-relaxed text-blue-700">
+                We'll be back soon! Please check back in a little while. Thank you for your patience.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Hard-block banner — shown when the order is ineligible.
             The Place Order button below is also disabled, so the customer
             cannot submit until they fix the issue (add more items or change
-            address). */}
-        {isBlocked && blockMessage && (
+            address). Hidden when orders are paused (the closed banner above
+            takes priority). */}
+        {isAcceptingOrders && isBlocked && blockMessage && (
           <div className="flex items-start gap-2 rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
             <div>
@@ -289,13 +334,15 @@ export function CheckoutView() {
       <div className="sticky bottom-0 z-20 border-t border-border bg-background px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <button
           onClick={placeOrder}
-          disabled={placing || authLoading || !profile?.phone?.trim() || !chosen || lines.length === 0 || isBlocked}
+          disabled={placing || authLoading || !profile?.phone?.trim() || !chosen || lines.length === 0 || isBlocked || !isAcceptingOrders}
           className="flex w-full items-center justify-between gap-3 rounded-xl bg-brand px-5 py-3.5 text-brand-foreground shadow-md transition active:scale-[0.99] disabled:opacity-50"
         >
           <span className="flex items-center gap-2 text-sm font-bold">
             {placing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {placing
               ? 'Placing order…'
+              : !isAcceptingOrders
+              ? 'Orders paused'
               : isBlocked
               ? 'Checkout blocked'
               : paymentMode === 'UPI'

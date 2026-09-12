@@ -15,6 +15,39 @@ import { notifyNewOrder } from '@/lib/telegram'
 //   notes?: string,
 // }
 export async function POST(req: NextRequest) {
+  // === STEP 0: Order-acceptance check ===
+  // This runs BEFORE auth, BEFORE delivery eligibility, BEFORE everything.
+  // If the admin has paused orders, reject immediately with a 503 "orders
+  // paused" response. The frontend detects this and shows a calm
+  // "We'll be back soon" message — not a jarring error.
+  //
+  // The check reads from the DB at the actual moment of order creation,
+  // so toggling the setting in the admin panel takes effect instantly
+  // for the next checkout attempt (no cache, no redeploy).
+  try {
+    const config = await db.restaurantConfig.findUnique({
+      where: { id: 1 },
+      select: { isAcceptingOrders: true },
+    })
+    // Default to accepting if the config row is missing (defensive —
+    // shouldn't happen since the migration seeds it, but never block
+    // orders on a missing config row).
+    const isAccepting = config?.isAcceptingOrders ?? true
+    if (!isAccepting) {
+      return NextResponse.json(
+        {
+          error: "We're currently closed — we'll be back soon!",
+          code: 'ORDERS_PAUSED',
+        },
+        { status: 503 }
+      )
+    }
+  } catch (e) {
+    // If the DB query itself fails, default to accepting (don't block
+    // orders on an infrastructure error).
+    console.error('[checkout] failed to check isAcceptingOrders:', e)
+  }
+
   const supabase = await getSupabaseForUser(req)
   const {
     data: { user },

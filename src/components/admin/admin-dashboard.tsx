@@ -112,6 +112,43 @@ export function AdminDashboard() {
   const [upiPendingOnly, setUpiPendingOnly] = useState(false)
 
   const qc = useQueryClient()
+
+  // === Order Acceptance Toggle ===
+  // Fetches the current isAcceptingOrders state from the DB. The admin can
+  // toggle it live — no redeploy required. The change takes effect instantly
+  // for the next /api/checkout request.
+  const { data: configData } = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/admin/settings')
+      if (!res.ok) return { config: { isAcceptingOrders: true } }
+      return res.json() as Promise<{ config: { isAcceptingOrders: boolean } }>
+    },
+  })
+  const isAcceptingOrders = configData?.config?.isAcceptingOrders ?? true
+
+  const [toggling, setToggling] = useState(false)
+  async function toggleAcceptingOrders() {
+    setToggling(true)
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isAcceptingOrders: !isAcceptingOrders }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        toast.error(j.error || 'Failed to toggle')
+        return
+      }
+      toast.success(!isAcceptingOrders ? 'Orders are now being accepted' : 'Orders have been paused')
+      qc.invalidateQueries({ queryKey: ['admin-settings'] })
+    } catch (e) {
+      toast.error('Failed to toggle')
+    } finally {
+      setToggling(false)
+    }
+  }
   const { data: stats } = useQuery<Stats>({
     queryKey: ['admin-stats'],
     queryFn: async () => {
@@ -250,6 +287,22 @@ export function AdminDashboard() {
           <div className="ml-auto hidden min-w-0 flex-1 sm:block">
             <p className="truncate text-[11px] text-muted-foreground">Restaurant owner dashboard</p>
           </div>
+          {/* Order Acceptance Toggle — live, no redeploy. Green when accepting,
+              red when paused. Tapping immediately updates the DB. */}
+          <button
+            onClick={toggleAcceptingOrders}
+            disabled={toggling}
+            className={`shrink-0 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition disabled:opacity-50 ${
+              isAcceptingOrders
+                ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                : 'bg-red-100 text-red-700 hover:bg-red-200'
+            }`}
+            title={isAcceptingOrders ? 'Click to pause new orders' : 'Click to accept new orders'}
+          >
+            <span className={`h-2 w-2 rounded-full ${isAcceptingOrders ? 'bg-emerald-500' : 'bg-red-500'} ${toggling ? 'animate-pulse' : ''}`} />
+            <span className="hidden sm:inline">{isAcceptingOrders ? 'Accepting Orders' : 'Orders Paused'}</span>
+            <span className="sm:hidden">{isAcceptingOrders ? 'Open' : 'Paused'}</span>
+          </button>
           <button
             onClick={logout}
             className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted"
