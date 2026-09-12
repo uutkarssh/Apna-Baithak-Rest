@@ -104,20 +104,36 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No valid items in cart.' }, { status: 400 })
   }
 
-  // === Dynamic delivery-charge calculation ===
-  // Single source of truth: src/lib/delivery.ts. The frontend runs the
-  // same computation for live preview, but the SERVER value is what gets
-  // stored — a malicious client cannot bypass the free-delivery threshold
+  // === FINAL delivery-pricing system (replaces all previous logic) ===
+  // Single source of truth: src/lib/delivery.ts. The frontend runs the same
+  // computation for live preview, but the SERVER value is what gets stored —
+  // a malicious client cannot bypass eligibility, the free-delivery override,
   // or send a custom charge.
   //
-  // Bill breakdown (after this change):
+  // Step 0: service radius (already checked above — non-serviceable addresses
+  //         are rejected before reaching here)
+  // Step 1: eligibility (₹200 min, ₹800 min for 7km+) — if not eligible,
+  //         return 400 with the block message. Never reach order.create().
+  // Step 2: charge calculation (₹20-₹70 scaled by distance, rounded to ₹5;
+  //         ₹0 if subtotal >= ₹2000)
+  //
+  // Bill breakdown:
   //   itemTotal   = sum(item.price * qty)
   //   deliveryFee = computeDeliveryCharge(distKm, itemTotal).finalCharge
-  //                 (0 if free-delivery threshold met, else rounded to ₹5)
+  //                 (0 if free-delivery override applies, else rounded to ₹5)
   //   handlingFee   = 0  (removed — kept in schema for historical orders)
   //   gstAndCharges = 0  (removed — kept in schema for historical orders)
   //   totalAmount = itemTotal + deliveryFee
   const deliveryCalc = computeDeliveryCharge(distKm, itemTotal)
+
+  // Step 1 enforcement — hard-block ineligible orders server-side
+  if (!deliveryCalc.eligible) {
+    return NextResponse.json(
+      { error: deliveryCalc.message },
+      { status: 400 }
+    )
+  }
+
   const deliveryFee = deliveryCalc.finalCharge
   const handlingFee = 0
   const gstAndCharges = 0

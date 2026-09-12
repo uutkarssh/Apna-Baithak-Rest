@@ -11,13 +11,14 @@ import {
   CheckCircle2,
   Loader2,
   ArrowRight,
+  AlertCircle,
 } from 'lucide-react'
 import { useApp } from '@/store/app'
 import { useCart } from '@/store/cart'
 import { useAuth } from '@/components/providers/auth-provider'
 import { rupees } from '@/lib/format'
 import { PAYMENT_MODES, RESTAURANT } from '@/lib/constants'
-import { computeDeliveryCharge } from '@/lib/delivery'
+import { computeDeliveryCharge, checkOrderEligibility } from '@/lib/delivery'
 import type { Address } from '@/lib/types'
 import { toast } from 'sonner'
 import type { Order } from '@/lib/types'
@@ -60,16 +61,26 @@ export function CheckoutView() {
     setView('profile')
   }, [authLoading, profile, setView])
 
-  // === Dynamic delivery-charge calculation ===
+  // === FINAL delivery-pricing system ===
   // Mirrors the server-side computation in /api/checkout. The server is the
   // source of truth for the stored charge, but we replicate it here so the
   // checkout preview matches what the customer will pay. The server will
   // recompute and validate this on submission — a client cannot bypass it.
+  //
+  // If the order is ineligible (below ₹200 min, or below ₹800 min for 7km+),
+  // the Place Order button is HARD-DISABLED with the block message shown —
+  // not just a soft warning after clicking.
   const distanceKm = chosen?.distanceKm ?? null
   const deliveryCalc =
     distanceKm != null ? computeDeliveryCharge(distanceKm, subtotal) : null
   const deliveryFee = deliveryCalc?.finalCharge ?? 0
   const total = subtotal + deliveryFee
+  const eligibility =
+    distanceKm != null ? checkOrderEligibility(distanceKm, subtotal) : null
+  const isBlocked = eligibility != null && !eligibility.eligible
+  const blockMessage = isBlocked && eligibility && !eligibility.eligible
+    ? eligibility.message
+    : null
 
   async function placeOrder() {
     if (authLoading) {
@@ -250,6 +261,20 @@ export function CheckoutView() {
           </dl>
         </section>
 
+        {/* Hard-block banner — shown when the order is ineligible.
+            The Place Order button below is also disabled, so the customer
+            cannot submit until they fix the issue (add more items or change
+            address). */}
+        {isBlocked && blockMessage && (
+          <div className="flex items-start gap-2 rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div>
+              <p className="font-bold">Checkout blocked</p>
+              <p className="mt-0.5 text-xs">{blockMessage}</p>
+            </div>
+          </div>
+        )}
+
         <p className="px-1 text-[11px] leading-relaxed text-muted-foreground">
           By placing this order you agree that orders cannot be cancelled or refunded once
           preparation begins at {RESTAURANT.name}.
@@ -260,13 +285,15 @@ export function CheckoutView() {
       <div className="sticky bottom-0 z-20 border-t border-border bg-background px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <button
           onClick={placeOrder}
-          disabled={placing || authLoading || !profile?.phone?.trim() || !chosen || lines.length === 0}
+          disabled={placing || authLoading || !profile?.phone?.trim() || !chosen || lines.length === 0 || isBlocked}
           className="flex w-full items-center justify-between gap-3 rounded-xl bg-brand px-5 py-3.5 text-brand-foreground shadow-md transition active:scale-[0.99] disabled:opacity-50"
         >
           <span className="flex items-center gap-2 text-sm font-bold">
             {placing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {placing
               ? 'Placing order…'
+              : isBlocked
+              ? 'Checkout blocked'
               : paymentMode === 'UPI'
               ? `Pay ${rupees(total)}`
               : `Place Order · ${rupees(total)}`}

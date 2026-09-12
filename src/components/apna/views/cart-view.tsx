@@ -11,7 +11,7 @@ import { useAuth } from '@/components/providers/auth-provider'
 import { QtyStepper } from '@/components/apna/qty-stepper'
 import { rupees } from '@/lib/format'
 import { RESTAURANT } from '@/lib/constants'
-import { computeDeliveryCharge, remainingForFreeDelivery } from '@/lib/delivery'
+import { computeDeliveryCharge, checkOrderEligibility, remainingForFreeDelivery, MIN_ORDER_SUBTOTAL, FAR_DISTANCE_THRESHOLD_KM, FAR_MIN_ORDER_SUBTOTAL, FREE_DELIVERY_OVERRIDE } from '@/lib/delivery'
 import type { Address } from '@/lib/types'
 
 export function CartView() {
@@ -45,14 +45,13 @@ export function CartView() {
     addresses.find((a) => a.isDefault) ||
     null
 
-  // === Dynamic delivery-charge calculation ===
-  // Same formula as the backend (src/lib/delivery.ts). The server is the
+  // === FINAL delivery-pricing system ===
+  // Same logic as the backend (src/lib/delivery.ts). The server is the
   // source of truth for the stored charge, but we mirror it here so the
   // cart preview matches what the customer will actually pay.
   //
-  // If no address is chosen yet, we can't compute distance — fall back to
-  // showing the minimum charge (1km rate) as a placeholder so the total
-  // isn't misleadingly low.
+  // If no address is chosen yet, we can't compute distance — show a
+  // placeholder message prompting the user to select an address.
   const distanceKm = chosen?.distanceKm ?? null
   const deliveryCalc =
     distanceKm != null
@@ -60,9 +59,12 @@ export function CartView() {
       : null
   const deliveryFee = deliveryCalc?.finalCharge ?? 0
   const total = subtotal + deliveryFee
+  const eligibility =
+    distanceKm != null ? checkOrderEligibility(distanceKm, subtotal) : null
+  const isBlocked = eligibility != null && !eligibility.eligible
   const remainingForFree =
     distanceKm != null ? remainingForFreeDelivery(distanceKm, subtotal) : null
-  const hasFreeDelivery = distanceKm != null && remainingForFree === 0
+  const hasFreeDelivery = deliveryCalc?.isFree === true
 
   function checkout() {
     // Don't bounce to login while the initial session check is still in
@@ -206,31 +208,57 @@ export function CartView() {
             </div>
           </section>
 
-          {/* Free-delivery progress message — only shown when an address
-              is selected (so distance is known). Updates live as the cart
-              subtotal changes or the selected address changes. */}
+          {/* Delivery-pricing message — live, updates as cart/address changes.
+              Shows different messages based on the current state:
+              - No address selected: prompt to select one
+              - Blocked (below ₹200 min): "Add ₹X more to enable delivery"
+              - Blocked (7km+ & below ₹800): "Add ₹X more — orders beyond 7km need ₹800 min"
+              - Eligible & subtotal < ₹2000: show the charge + "Add ₹X more for free delivery"
+              - Eligible & subtotal >= ₹2000: "Delivery: FREE" */}
           {chosen && distanceKm != null && (
             <div
               className={`flex items-start gap-2 rounded-2xl p-3 text-xs leading-relaxed ${
                 hasFreeDelivery
                   ? 'bg-emerald-50 text-emerald-900'
+                  : isBlocked
+                  ? 'bg-amber-50 text-amber-900'
                   : 'bg-brand-softer text-foreground'
               }`}
             >
-              <Truck className={`mt-0.5 h-4 w-4 shrink-0 ${hasFreeDelivery ? 'text-emerald-600' : 'text-brand'}`} />
+              <Truck className={`mt-0.5 h-4 w-4 shrink-0 ${hasFreeDelivery ? 'text-emerald-600' : isBlocked ? 'text-amber-600' : 'text-brand'}`} />
               <p className="flex-1">
-                {hasFreeDelivery ? (
+                {isBlocked && eligibility && !eligibility.eligible ? (
+                  <>
+                    Add <span className="font-bold">{rupees(eligibility.remaining)}</span> more —{' '}
+                    {eligibility.reason === 'BELOW_FAR_MIN_SUBTOTAL'
+                      ? `orders beyond ${FAR_DISTANCE_THRESHOLD_KM}km need a ${rupees(FAR_MIN_ORDER_SUBTOTAL)} minimum`
+                      : `minimum order for delivery is ${rupees(MIN_ORDER_SUBTOTAL)}`}.
+                  </>
+                ) : hasFreeDelivery ? (
                   <span className="font-bold">You've unlocked free delivery!</span>
+                ) : remainingForFree != null && remainingForFree > 0 ? (
+                  <>
+                    Delivery: <span className="font-bold text-brand">{rupees(deliveryFee)}</span>
+                    <span className="mt-0.5 block text-muted-foreground">
+                      Add <span className="font-semibold">{rupees(remainingForFree)}</span> more for free delivery
+                      (at {rupees(FREE_DELIVERY_OVERRIDE)}).
+                    </span>
+                  </>
                 ) : (
                   <>
-                    Add <span className="font-bold text-brand">{rupees(remainingForFree ?? 0)}</span> more
-                    to get free delivery.
+                    Delivery: <span className="font-bold text-brand">{rupees(deliveryFee)}</span>
                     <span className="mt-0.5 block text-muted-foreground">
-                      Free delivery at {rupees(computeDeliveryCharge(distanceKm, 0).freeThreshold)} for this distance ({distanceKm.toFixed(2)} km).
+                      Based on {distanceKm.toFixed(2)} km from restaurant.
                     </span>
                   </>
                 )}
               </p>
+            </div>
+          )}
+          {(!chosen || distanceKm == null) && (
+            <div className="flex items-start gap-2 rounded-2xl bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+              <Truck className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>Select a delivery address to see the delivery charge.</p>
             </div>
           )}
 
