@@ -26,7 +26,7 @@ const outfit = Outfit({
 export const metadata: Metadata = {
   title: "Apna Baithak — Order food online",
   description:
-    "Apna Baithak — your neighbourhood kitchen on Suriyawan Road. Fresh pizzas, burgers, pasta, chaat & more. Order online for delivery within 5 km.",
+    "Apna Baithak — your neighbourhood kitchen on Suriyawan Road. Fresh pizzas, burgers, pasta, chaat & more. Order online for delivery within 10 km.",
   keywords: ["Apna Baithak", "food delivery", "Suriyawan", "Bankat Khas", "online food order"],
   authors: [{ name: "Apna Baithak" }],
   manifest: "/manifest.json",

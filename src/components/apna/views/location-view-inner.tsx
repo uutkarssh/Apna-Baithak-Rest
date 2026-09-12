@@ -334,7 +334,7 @@ export function LocationView() {
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700">
-              <AlertTriangle className="h-3 w-3" /> Outside range
+              <AlertTriangle className="h-3 w-3" /> Outside delivery area
             </span>
           )}
         </div>

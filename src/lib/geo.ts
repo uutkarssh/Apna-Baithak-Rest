@@ -2,7 +2,7 @@ import { RESTAURANT } from './constants'
 
 /**
  * Haversine straight-line distance between two lat/lng points (km).
- * Used for the live 5km delivery-radius check (spec Section 3.7).
+ * Used for the live 10km delivery-radius check.
  */
 export function haversineKm(
   aLat: number,

@@ -8,7 +8,7 @@ export const RESTAURANT = {
   email: 'apnabaithak73@gmail.com',
   lat: Number(process.env.RESTAURANT_LAT ?? 25.337698),
   lng: Number(process.env.RESTAURANT_LNG ?? 82.351485),
-  deliveryRadiusKm: Number(process.env.DELIVERY_RADIUS_KM ?? 5),
+  deliveryRadiusKm: Number(process.env.DELIVERY_RADIUS_KM ?? 10),
   // simple ETA estimate shown in the top bar
   deliveryEtaMin: '25-35 min',
 }
