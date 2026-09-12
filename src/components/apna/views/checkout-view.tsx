@@ -249,6 +249,8 @@ export function CheckoutView() {
               <dd className="font-semibold text-foreground">
                 {distanceKm == null
                   ? 'Select address'
+                  : isBlocked
+                  ? <span className="text-amber-600">Not available</span>
                   : deliveryFee === 0
                   ? <span className="text-emerald-600">FREE</span>
                   : rupees(deliveryFee)}
@@ -256,7 +258,9 @@ export function CheckoutView() {
             </div>
             <div className="mt-1 flex justify-between border-t border-border pt-2">
               <dt className="font-bold text-foreground">To Pay</dt>
-              <dd className="text-lg font-extrabold text-brand">{rupees(total)}</dd>
+              <dd className="text-lg font-extrabold text-brand">
+                {isBlocked ? rupees(subtotal) : rupees(total)}
+              </dd>
             </div>
           </dl>
         </section>

@@ -262,7 +262,12 @@ export function CartView() {
             </div>
           )}
 
-          {/* Bill details — only item subtotal + delivery charge + total. */}
+          {/* Bill details — only item subtotal + delivery charge + total.
+              When the order is blocked (below ₹200 min, or below ₹800 min for
+              7km+), the Delivery Fee line shows "Not available" instead of
+              "FREE" — because delivery is NOT free, it's unavailable. The
+              To Pay line shows just the subtotal (no delivery added) since
+              the order cannot be placed yet. */}
           <section className="rounded-2xl border border-border/60 bg-card p-4 shadow-sm">
             <h3 className="mb-3 text-sm font-bold text-foreground">Bill Details</h3>
             <dl className="flex flex-col gap-2 text-sm">
@@ -275,6 +280,8 @@ export function CartView() {
                 <dd className="font-semibold text-foreground">
                   {distanceKm == null
                     ? 'Select address'
+                    : isBlocked
+                    ? <span className="text-amber-600">Not available</span>
                     : deliveryFee === 0
                     ? <span className="text-emerald-600">FREE</span>
                     : rupees(deliveryFee)}
@@ -282,7 +289,9 @@ export function CartView() {
               </div>
               <div className="mt-1 flex justify-between border-t border-border pt-2">
                 <dt className="font-bold text-foreground">To Pay</dt>
-                <dd className="text-lg font-extrabold text-brand">{rupees(total)}</dd>
+                <dd className="text-lg font-extrabold text-brand">
+                  {isBlocked ? rupees(subtotal) : rupees(total)}
+                </dd>
               </div>
             </dl>
           </section>
