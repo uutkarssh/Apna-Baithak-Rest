@@ -328,54 +328,55 @@ export function AdminDashboard() {
           )}
         </section>
 
-        {/* Tabs — 5 equal-width cells on mobile so all tabs fit
-            without horizontal cut-off; switch to inline row on >=sm. */}
+        {/* Tabs — horizontally scrollable on all breakpoints so labels
+            are never truncated. Each tab is shrink-0 so it takes its full
+            natural width; the row scrolls if the viewport is too narrow. */}
         <div className="mb-4">
-          <div className="grid grid-cols-5 gap-1 rounded-xl bg-muted p-1 sm:flex sm:flex-initial">
+          <div className="no-scrollbar flex gap-1 overflow-x-auto rounded-xl bg-muted p-1">
             <button
               onClick={() => setTab('orders')}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-1 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
+              className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
                 tab === 'orders' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
               }`}
             >
               <LayoutDashboard className="h-4 w-4" />
-              <span className="truncate">Orders</span>
+              <span>Orders</span>
             </button>
             <button
               onClick={() => setTab('menu')}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-1 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
+              className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
                 tab === 'menu' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
               }`}
             >
               <UtensilsCrossed className="h-4 w-4" />
-              <span className="truncate">Menu</span>
+              <span>Menu</span>
             </button>
             <button
               onClick={() => setTab('featured')}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-1 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
+              className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
                 tab === 'featured' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
               }`}
             >
               <Star className="h-4 w-4" />
-              <span className="truncate">Featured</span>
+              <span>Featured</span>
             </button>
             <button
               onClick={() => setTab('analytics')}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-1 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
+              className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
                 tab === 'analytics' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
               }`}
             >
               <TrendingUp className="h-4 w-4" />
-              <span className="truncate">Analytics</span>
+              <span>Analytics</span>
             </button>
             <button
               onClick={() => setTab('reviews')}
-              className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-1 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
+              className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
                 tab === 'reviews' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
               }`}
             >
               <Star className="h-4 w-4" />
-              <span className="truncate">Reviews</span>
+              <span>Reviews</span>
             </button>
           </div>
         </div>
