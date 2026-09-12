@@ -47,6 +47,15 @@ model MenuItem {
   calories     Int?
   rating       Float           @default(0)
   sortOrder    Int             @default(0)
+  // === Featured Items (homepage) ===
+  // isFeatured: when true, the item appears in the homepage "Featured Items"
+  // section. Admin toggles this from the menu management screen.
+  // featuredOrder: the display sequence (0, 1, 2, ...) within the featured
+  // section. Admin controls this via drag-and-drop reordering. Null for
+  // non-featured items. When an item is unmarked, its featuredOrder is
+  // cleared and the remaining items are re-sequenced to close the gap.
+  isFeatured   Boolean         @default(false)
+  featuredOrder Int?
   createdAt     DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
   images       MenuItemImage[]
@@ -55,6 +64,7 @@ model MenuItem {
   @@index([categoryId])
   @@index([isAvailable])
   @@index([sortOrder])
+  @@index([isFeatured])
   @@map("menu_items")
 }
 

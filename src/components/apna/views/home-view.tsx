@@ -47,6 +47,19 @@ export function HomeView() {
     },
   })
 
+  // Fetch featured items — these are the items the admin has marked as
+  // featured (via drag-and-drop in the admin panel). Ordered by featuredOrder.
+  // If zero items are featured, this returns an empty array and the homepage
+  // hides the Featured Items section entirely (graceful fallback).
+  const { data: featuredData } = useQuery({
+    queryKey: ['menu-featured'],
+    queryFn: async () => {
+      const res = await fetch('/api/menu/featured')
+      if (!res.ok) return { items: [] }
+      return res.json() as Promise<{ items: MenuItem[] }>
+    },
+  })
+
   // Fetch restaurant average rating
   const { data: ratingData } = useQuery({
     queryKey: ['restaurant-rating'],
@@ -59,7 +72,11 @@ export function HomeView() {
 
   const categories = catData?.categories ?? []
   const items = itemsData?.items ?? []
-  const featured = items.slice(0, 10)
+  // Featured items come from the dedicated /api/menu/featured endpoint
+  // (admin-controlled via drag-and-drop). Fall back to first 10 of all items
+  // only if the featured endpoint hasn't loaded yet AND items have loaded —
+  // this prevents a flash of empty content on first paint.
+  const featured = featuredData?.items ?? []
   const popular = items.slice(6, 20)
   const avgRating = ratingData?.avgRating ?? 0
   const totalReviews = ratingData?.totalReviews ?? 0
@@ -156,7 +173,12 @@ export function HomeView() {
         </motion.div>
       </section>
 
-      {/* Featured items — horizontal scroll on mobile, responsive grid on >= sm */}
+      {/* Featured items — horizontal scroll on mobile, responsive grid on >= sm.
+          Hidden entirely when zero items are featured (graceful fallback —
+          the admin hasn't marked any items as featured yet, or has unmarked
+          all of them). The count badge shows the actual number of featured
+          items, not a hardcoded number. */}
+      {featured.length > 0 && (
       <section className="px-4 sm:px-0">
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-1.5">
@@ -189,6 +211,7 @@ export function HomeView() {
             : featured.map((it, i) => <ItemCard key={it.id} item={it} index={i} />)}
         </div>
       </section>
+      )}
 
       {/* Popular items — always a grid, with responsive column counts */}
       <section className="px-4 sm:px-0">

@@ -41,6 +41,7 @@ import { toast } from 'sonner'
 import { SalesAnalytics } from './sales-analytics'
 import { OrderDetailModal } from './order-detail-modal'
 import { ReviewsPanel } from './reviews-panel'
+import { FeaturedTab } from './featured-tab'
 import { AdminOrderRowSkeleton, StatCardSkeleton, AdminItemRowSkeleton } from '@/components/apna/skeletons'
 import { BrandIcon, BrandWordmark } from '@/components/brand/brand-logo'
 
@@ -106,7 +107,7 @@ type Stats = {
 
 export function AdminDashboard() {
   const { logout } = useAdminAuth()
-  const [tab, setTab] = useState<'orders' | 'menu' | 'analytics' | 'reviews'>('orders')
+  const [tab, setTab] = useState<'orders' | 'menu' | 'featured' | 'analytics' | 'reviews'>('orders')
   const [statusFilter, setStatusFilter] = useState<OrderStatus | 'ALL'>('ALL')
   // UPI verification filter — when true, only show orders with upiStatus=PENDING_VERIFICATION
   const [upiPendingOnly, setUpiPendingOnly] = useState(false)
@@ -327,10 +328,10 @@ export function AdminDashboard() {
           )}
         </section>
 
-        {/* Tabs — always 4 equal-width cells on mobile so all tabs fit
+        {/* Tabs — 5 equal-width cells on mobile so all tabs fit
             without horizontal cut-off; switch to inline row on >=sm. */}
         <div className="mb-4">
-          <div className="grid grid-cols-4 gap-1 rounded-xl bg-muted p-1 sm:flex sm:flex-initial">
+          <div className="grid grid-cols-5 gap-1 rounded-xl bg-muted p-1 sm:flex sm:flex-initial">
             <button
               onClick={() => setTab('orders')}
               className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-1 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
@@ -348,6 +349,15 @@ export function AdminDashboard() {
             >
               <UtensilsCrossed className="h-4 w-4" />
               <span className="truncate">Menu</span>
+            </button>
+            <button
+              onClick={() => setTab('featured')}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-1 py-2 text-xs font-semibold sm:px-4 sm:text-sm ${
+                tab === 'featured' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
+              }`}
+            >
+              <Star className="h-4 w-4" />
+              <span className="truncate">Featured</span>
             </button>
             <button
               onClick={() => setTab('analytics')}
@@ -384,6 +394,8 @@ export function AdminDashboard() {
           />
         ) : tab === 'menu' ? (
           <MenuTab />
+        ) : tab === 'featured' ? (
+          <FeaturedTab />
         ) : tab === 'analytics' ? (
           <SalesAnalytics />
         ) : (

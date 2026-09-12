@@ -4,7 +4,8 @@ import { isAdminAuthorized } from '@/lib/admin-guard'
 import { slugify } from '@/lib/format'
 import { MAX_ITEM_IMAGES } from '@/lib/constants'
 
-// GET /api/admin/menu/items — all items
+// GET /api/admin/menu/items — all items (including isFeatured + featuredOrder
+// so the admin panel can show/manage the featured-items list).
 export async function GET(req: NextRequest) {
   if (!isAdminAuthorized(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
