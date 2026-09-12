@@ -1,0 +1,249 @@
+// Apna Baithak — Prisma schema (Turso / libSQL)
+// Data model per build spec Section 0:
+//   - Menu categories + menu items (+ up to 5 images per item) live in Turso
+//   - Customer accounts/addresses + orders + order items live in Turso
+//   - Supabase handles customer Auth only; Supabase Storage holds menu images
+//   - NO admin table — admin login is a hardcoded check (Section 3.9)
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===== Menu =====
+
+model Category {
+  id          String     @id @default(cuid())
+  name        String     @unique
+  slug        String     @unique
+  iconUrl     String?
+  description String?
+  sortOrder   Int        @default(0)
+  isActive    Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  items       MenuItem[]
+
+  @@index([sortOrder])
+  @@map("categories")
+}
+
+model MenuItem {
+  id           String          @id @default(cuid())
+  name         String
+  slug         String          @unique
+  description  String?
+  price        Int
+  categoryId   String
+  category     Category        @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  isAvailable  Boolean         @default(true)
+  isVeg        Boolean         @default(true)
+  prepTimeMins Int?
+  calories     Int?
+  rating       Float           @default(0)
+  sortOrder    Int             @default(0)
+  createdAt     DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  images       MenuItemImage[]
+  orderItems   OrderItem[]
+
+  @@index([categoryId])
+  @@index([isAvailable])
+  @@index([sortOrder])
+  @@map("menu_items")
+}
+
+// Up to 5 images per item (enforced in admin upload logic, Section 3.9)
+model MenuItemImage {
+  id        String   @id @default(cuid())
+  itemId    String
+  item      MenuItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  url       String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([itemId, sortOrder])
+  @@map("menu_item_images")
+}
+
+// ===== Customers & Addresses =====
+// Customer account is a mirror of the Supabase Auth user (created on first login).
+model Customer {
+  id             String    @id @default(cuid())
+  supabaseUserId String    @unique
+  email          String    @unique
+  name           String?
+  phone          String?
+  avatarUrl      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  addresses      Address[]
+  orders         Order[]
+
+  @@index([email])
+  @@map("customers")
+}
+
+model Address {
+  id         String    @id @default(cuid())
+  customerId String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  label      String?
+  houseFlat  String
+  streetArea String
+  landmark   String?
+  city       String
+  pincode    String
+  latitude   Float
+  longitude  Float
+  distanceKm Float?
+  isDefault  Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  orders     Order[]
+
+  @@index([customerId])
+  @@map("addresses")
+}
+
+// ===== Orders =====
+
+model Order {
+  id            String              @id @default(cuid())
+  orderNumber   String              @unique
+  customerId    String
+  customer       Customer            @relation(fields: [customerId], references: [id])
+  addressId     String
+  address       Address             @relation(fields: [addressId], references: [id])
+  customerName  String
+  customerPhone String?
+  addressLine   String
+  status        String              @default("NEW")
+  paymentMode   String              @default("COD")
+  paymentStatus String              @default("PENDING")
+  // Admin-controlled payment tracking (separate from the original checkout
+  // paymentMode/paymentStatus). The admin marks these when payment is
+  // actually received at the door — the method may differ from the original
+  // checkout choice (e.g. COD order paid via UPI QR at the door).
+  paymentReceived       Boolean @default(false)
+  paymentReceivedMethod String? // "Cash" | "UPI" | null
+  // UPI online payment verification flow (Section: UPI Payment).
+  // Drives the admin "Pending Verification" filter and the customer-facing
+  // payment screen state machine.
+  //   NONE                  — not a UPI order, or UPI but no attempt started
+  //   AWAITING_SCREENSHOT   — Pay button clicked, deep link opened, 5-min window running
+  //   PENDING_VERIFICATION  — screenshot uploaded but Gemini verification FAILED (admin must review)
+  //   PAID                  — verified (auto by Gemini OR manually by admin)
+  //   EXPIRED               — 5-min window lapsed with no upload (customer can retry)
+  upiStatus          String              @default("NONE")
+  // The UTR/transaction reference of the SUCCESSFULLY verified payment.
+  // Used to detect duplicate/reused screenshots across orders.
+  verifiedUtr        String?
+  // URL of the last uploaded screenshot (for admin review when pending verification)
+  upiScreenshotUrl   String?
+  // Structured Gemini verification result JSON (for admin review)
+  upiVerificationResult String?
+  itemTotal     Int
+  handlingFee   Int                 @default(0)
+  deliveryFee   Int                 @default(0)
+  gstAndCharges Int                 @default(0)
+  totalAmount   Int
+  distanceKm    Float?
+  notes         String?
+  rating        Int?
+  review        String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  items         OrderItem[]
+  statusHistory OrderStatusHistory[]
+  paymentAttempts PaymentAttempt[]
+
+  @@index([customerId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String    @id @default(cuid())
+  orderId   String
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  itemId    String?
+  item       MenuItem? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  itemName  String
+  itemPrice Int
+  quantity  Int
+  imageUrl  String?
+  createdAt DateTime  @default(now())
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    String
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+  @@map("order_status_history")
+}
+
+// ===== UPI Payment Attempts =====
+// One order can have multiple attempts (customer retries after expiry).
+// Each attempt tracks a single 5-minute screenshot-upload window and the
+// Gemini Vision verification result for the screenshot uploaded in that window.
+
+model PaymentAttempt {
+  id            String   @id @default(cuid())
+  orderId       String
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  attemptNumber Int
+  // AWAITING_SCREENSHOT | PENDING_VERIFICATION | VERIFIED | REJECTED | EXPIRED
+  status        String   @default("AWAITING_SCREENSHOT")
+  // The unique transaction reference we embed in the UPI deep link (tr=...).
+  // Format: AB-YYYY-NNNN-ATTn  (orderNumber + attempt number)
+  upiTxnRef     String   @unique
+  // Snapshot of the store's UPI config used for this attempt (so historical
+  // attempts remain valid even if the env var changes later).
+  payeeVpa      String
+  payeeName     String
+  amount        Int
+  startedAt     DateTime @default(now())
+  expiresAt     DateTime
+  // Screenshot uploaded by the customer
+  screenshotUrl   String?
+  uploadedAt      DateTime?
+  // Gemini Vision verification result (parsed structured fields)
+  geminiIsAuthentic       Boolean?
+  geminiExtractedTimestamp String?
+  geminiExtractedAmount   Int?
+  geminiExtractedPayee    String?
+  geminiExtractedUtr      String?
+  geminiConfidence        Float?
+  geminiReasoning         String?
+  geminiRawResponse       String?
+  // Comma-separated list of failed checks (for admin review):
+  // e.g. "authenticity,amount" or "" if all passed
+  failedChecks      String?
+  verifiedAt     DateTime?
+  // Admin manual review
+  adminReviewedBy String?
+  adminReviewedAt DateTime?
+  adminNote      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([orderId, attemptNumber])
+  @@index([status])
+  @@index([geminiExtractedUtr])
+  @@map("payment_attempts")
+}

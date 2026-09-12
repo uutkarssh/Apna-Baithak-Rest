@@ -1,0 +1,74 @@
+{
+  "name": "Apna Baithak",
+  "short_name": "Apna Baithak",
+  "description": "Apna Baithak — your neighbourhood kitchen on Suriyawan Road. Fresh pizzas, burgers, pasta, chaat & more. Order online for delivery within 5 km.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#FF5252",
+  "background_color": "#FF5252",
+  "categories": ["food", "shopping", "lifestyle"],
+  "icons": [
+    {
+      "src": "/brand/favicon-16x16.png",
+      "sizes": "16x16",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/favicon-32x32.png",
+      "sizes": "32x32",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/favicon-48x48.png",
+      "sizes": "48x48",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/maskable-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/brand/maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "View Menu",
+      "short_name": "Menu",
+      "url": "/?view=categories",
+      "description": "Browse the full menu"
+    },
+    {
+      "name": "My Cart",
+      "short_name": "Cart",
+      "url": "/?view=cart"
+    },
+    {
+      "name": "My Orders",
+      "short_name": "Orders",
+      "url": "/?view=orders"
+    }
+  ]
+}

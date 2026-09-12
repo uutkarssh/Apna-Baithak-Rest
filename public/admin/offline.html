@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Apna Baithak Admin — Offline</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 2rem;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1A1A1A;
+      color: #FAFAFA;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card {
+      text-align: center;
+      max-width: 360px;
+    }
+    .icon {
+      width: 96px;
+      height: 96px;
+      margin: 0 auto 1.5rem;
+      background: #FF5252;
+      border-radius: 24px;
+      display: grid;
+      place-items: center;
+      font-size: 32px;
+      font-weight: 800;
+      color: white;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 0.5rem; }
+    p { color: #A1A1A1; line-height: 1.5; margin: 0 0 1.5rem; }
+    button {
+      background: #FF5252;
+      color: white;
+      border: 0;
+      border-radius: 12px;
+      padding: 0.75rem 1.5rem;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">AB</div>
+    <h1>You're offline</h1>
+    <p>The admin panel needs an active internet connection to load orders, menu items, and live data. Please reconnect and try again.</p>
+    <button onclick="location.reload()">Retry</button>
+  </div>
+</body>
+</html>
