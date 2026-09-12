@@ -2,9 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import {
   answerCallbackQuery,
-  editTelegramMessage,
+  editAllTelegramMessagesForOrder,
   notifyPaymentReceived,
-  sendTelegramMessage,
 } from '@/lib/telegram'
 
 // POST /api/telegram/webhook
@@ -99,16 +98,14 @@ export async function POST(req: NextRequest) {
 
       await answerCallbackQuery(callbackId, '✅ Payment verified — order marked as Paid')
 
-      // Edit the original message to show the verified status
-      if (messageId) {
-        await editTelegramMessage(
-          chatId,
-          messageId,
-          `✅ <b>Payment Verified — ${order.orderNumber}</b>\n\n💰 ₹${order.totalAmount} via UPI\n👤 ${order.customerName}\n\n<i>Verified by admin via Telegram button.</i>`
-        )
-      }
+      // Edit ALL stored Telegram messages for this order (not just the one
+      // where the button was pressed). This ensures both devices' messages
+      // update to show "Verified" — multi-device sync.
+      const verifiedText = `✅ <b>Payment Verified — ${order.orderNumber}</b>\n\n💰 ₹${order.totalAmount} via UPI\n👤 ${order.customerName}\n\n<i>Verified by admin via Telegram button.</i>`
+      await editAllTelegramMessagesForOrder(orderId, verifiedText)
 
-      // Fire the payment-received alert (separate message with full details)
+      // Fire the payment-received alert (separate message with full details,
+      // sent to all configured chats)
       notifyPaymentReceived(orderId, order.verifiedUtr).catch((e) =>
         console.error('[telegram-webhook] notifyPaymentReceived error:', e)
       )
@@ -134,13 +131,10 @@ export async function POST(req: NextRequest) {
 
       await answerCallbackQuery(callbackId, '❌ Rejected — flagged for follow-up')
 
-      if (messageId) {
-        await editTelegramMessage(
-          chatId,
-          messageId,
-          `❌ <b>Payment Rejected — ${order.orderNumber}</b>\n\n💰 ₹${order.totalAmount} via UPI\n👤 ${order.customerName}\n\n<i>Rejected by admin via Telegram button. Order remains pending — customer should be contacted.</i>`
-        )
-      }
+      // Edit ALL stored Telegram messages for this order (not just the one
+      // where the button was pressed). Multi-device sync.
+      const rejectedText = `❌ <b>Payment Rejected — ${order.orderNumber}</b>\n\n💰 ₹${order.totalAmount} via UPI\n👤 ${order.customerName}\n\n<i>Rejected by admin via Telegram button. Order remains pending — customer should be contacted.</i>`
+      await editAllTelegramMessagesForOrder(orderId, rejectedText)
 
       return NextResponse.json({ ok: true })
     }

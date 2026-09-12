@@ -248,9 +248,26 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       },
     })
 
-    notifyPaymentPendingManual(orderId).catch((e) =>
+    // Send the pending-verification Telegram message to ALL configured chats,
+    // then store the returned {chatId, messageId} pairs on the order record.
+    // This is critical for multi-device sync: when an admin presses
+    // Verify/Reject on one device, the webhook needs to edit the message on
+    // ALL devices — not just the one where the button was pressed.
+    try {
+      const results = await notifyPaymentPendingManual(orderId)
+      // Only store the pairs that have a valid messageId (successful sends)
+      const pairs = results
+        .filter((r) => r.ok && r.messageId != null)
+        .map((r) => ({ chatId: r.chatId, messageId: r.messageId! }))
+      if (pairs.length > 0) {
+        await db.order.update({
+          where: { id: orderId },
+          data: { telegramMessageIds: JSON.stringify(pairs) },
+        })
+      }
+    } catch (e) {
       console.error('[upi/upload] telegram pending notify error:', e)
-    )
+    }
 
     return NextResponse.json({
       outcome: 'PENDING_VERIFICATION',

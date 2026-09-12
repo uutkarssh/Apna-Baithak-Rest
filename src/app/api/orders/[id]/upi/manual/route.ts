@@ -99,10 +99,24 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     },
   })
 
-  // Fire Telegram alert with inline Verify/Reject buttons
-  notifyPaymentPendingManual(orderId).catch((e) =>
+  // Fire Telegram alert with inline Verify/Reject buttons to ALL configured
+  // chats, then store the returned {chatId, messageId} pairs on the order
+  // record so the webhook can edit all messages when a button is pressed
+  // (multi-device sync).
+  try {
+    const results = await notifyPaymentPendingManual(orderId)
+    const pairs = results
+      .filter((r) => r.ok && r.messageId != null)
+      .map((r) => ({ chatId: r.chatId, messageId: r.messageId! }))
+    if (pairs.length > 0) {
+      await db.order.update({
+        where: { id: orderId },
+        data: { telegramMessageIds: JSON.stringify(pairs) },
+      })
+    }
+  } catch (e) {
     console.error('[upi/manual] telegram notify error:', e)
-  )
+  }
 
   return NextResponse.json({
     outcome: 'PENDING_VERIFICATION',

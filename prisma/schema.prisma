@@ -148,6 +148,14 @@ model Order {
   upiScreenshotUrl   String?
   // Structured Gemini verification result JSON (for admin review)
   upiVerificationResult String?
+  // JSON array of {chatId, messageId} pairs for the Telegram messages sent
+  // when this order entered PENDING_VERIFICATION state. Stored so that when
+  // an admin presses Verify/Reject on ONE device, the webhook can edit the
+  // message on ALL devices (multi-chat sync). Format:
+  //   [{"chatId":"5000748165","messageId":42},{"chatId":"6560608668","messageId":99}]
+  // Null for orders that never entered pending verification, or orders from
+  // before this field was added.
+  telegramMessageIds String?
   itemTotal     Int
   handlingFee   Int                 @default(0)
   deliveryFee   Int                 @default(0)

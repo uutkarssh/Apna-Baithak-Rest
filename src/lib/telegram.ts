@@ -1,22 +1,63 @@
 // Telegram Bot notification helper.
-// Sends messages to the configured chat (the store owner) via the Telegram
-// Bot API. Used for new-order alerts, payment-received alerts, and
-// pending-verification alerts (with inline Verify/Reject buttons).
+// Sends messages to ALL configured chats (the store owner + any co-managers)
+// via the Telegram Bot API. Used for new-order alerts, payment-received
+// alerts, and pending-verification alerts (with inline Verify/Reject buttons).
 //
 // Also exposes a webhook handler for Telegram callback_query events (button
 // presses) — see /api/telegram/webhook.
 //
 // Server-side ONLY — TELEGRAM_BOT_TOKEN is never exposed to the client.
+//
+// === MULTI-CHAT SUPPORT ===
+// Set TELEGRAM_CHAT_IDS to a comma-separated list of chat IDs:
+//   TELEGRAM_CHAT_IDS=5000748165,6560608668
+// Every notification is sent to ALL chats. Each chat gets its own message_id
+// for the same logical message. When an admin presses a button on one device,
+// the webhook looks up ALL stored {chatId, messageId} pairs for that order
+// and edits EVERY one — so both devices stay in sync.
+//
+// Backwards compat: if TELEGRAM_CHAT_IDS is not set, falls back to the old
+// TELEGRAM_CHAT_ID (singular) env var.
 
 import { db } from './db'
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID
 
 const API = (method: string) => `https://api.telegram.org/bot${BOT_TOKEN}/${method}`
 
 /**
- * Send a plain-text (HTML) message. Silently no-ops if env vars are missing.
+ * Parse the list of chat IDs from env.
+ * Supports both TELEGRAM_CHAT_IDS (comma-separated, plural) and the legacy
+ * TELEGRAM_CHAT_ID (singular) for backwards compat.
+ */
+function getChatIds(): string[] {
+  // Prefer the plural form (TELEGRAM_CHAT_IDS)
+  const plural = process.env.TELEGRAM_CHAT_IDS
+  if (plural && plural.trim()) {
+    return plural
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  }
+  // Fall back to the singular form for backwards compat
+  const singular = process.env.TELEGRAM_CHAT_ID
+  if (singular && singular.trim()) {
+    return [singular.trim()]
+  }
+  return []
+}
+
+/** A single message send result — which chat received it + its message_id. */
+export type TelegramMessageResult = {
+  chatId: string
+  messageId?: number
+  ok: boolean
+}
+
+/**
+ * Send a plain-text (HTML) message to ALL configured chats.
+ * Returns an array of per-chat results (one entry per chat).
+ * Silently no-ops if env vars are missing.
  */
 export async function sendTelegramMessage(
   text: string,
@@ -24,33 +65,42 @@ export async function sendTelegramMessage(
     reply_markup?: any
     disable_web_page_preview?: boolean
   }
-): Promise<{ message_id?: number; ok: boolean }> {
-  if (!BOT_TOKEN || !CHAT_ID) {
-    console.warn('[telegram] BOT_TOKEN or CHAT_ID not configured — message not sent')
-    return { ok: false }
+): Promise<TelegramMessageResult[]> {
+  const chatIds = getChatIds()
+  if (!BOT_TOKEN || chatIds.length === 0) {
+    console.warn('[telegram] BOT_TOKEN or CHAT_IDS not configured — message not sent')
+    return []
   }
-  try {
-    const res = await fetch(API('sendMessage'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text,
-        parse_mode: 'HTML',
-        disable_web_page_preview: options?.disable_web_page_preview ?? true,
-        reply_markup: options?.reply_markup,
-      }),
+
+  // Send to all chats in parallel (independent requests)
+  const results = await Promise.all(
+    chatIds.map(async (chatId): Promise<TelegramMessageResult> => {
+      try {
+        const res = await fetch(API('sendMessage'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text,
+            parse_mode: 'HTML',
+            disable_web_page_preview: options?.disable_web_page_preview ?? true,
+            reply_markup: options?.reply_markup,
+          }),
+        })
+        const data = await res.json()
+        if (!res.ok || !data.ok) {
+          console.error(`[telegram] sendMessage to ${chatId} failed: ${JSON.stringify(data).slice(0, 300)}`)
+          return { chatId, ok: false }
+        }
+        return { chatId, messageId: data.result?.message_id, ok: true }
+      } catch (e) {
+        console.error(`[telegram] sendMessage to ${chatId} error: ${(e as Error).message}`)
+        return { chatId, ok: false }
+      }
     })
-    const data = await res.json()
-    if (!res.ok || !data.ok) {
-      console.error(`[telegram] sendMessage failed: ${JSON.stringify(data).slice(0, 300)}`)
-      return { ok: false }
-    }
-    return { ok: true, message_id: data.result?.message_id }
-  } catch (e) {
-    console.error(`[telegram] sendMessage error: ${(e as Error).message}`)
-    return { ok: false }
-  }
+  )
+
+  return results
 }
 
 /**
@@ -74,8 +124,12 @@ export async function answerCallbackQuery(callbackQueryId: string, text?: string
 }
 
 /**
- * Edit an existing message's text (used after a button press to update the
- * message instead of sending a new one).
+ * Edit a single existing message's text (used after a button press to update
+ * the message instead of sending a new one).
+ *
+ * NOTE: This edits ONE specific message in ONE specific chat. To edit all
+ * stored messages for an order (multi-device sync), use
+ * editAllTelegramMessagesForOrder() instead.
  */
 export async function editTelegramMessage(
   chatId: string,
@@ -99,6 +153,45 @@ export async function editTelegramMessage(
     })
   } catch (e) {
     console.error(`[telegram] editMessageText error: ${(e as Error).message}`)
+  }
+}
+
+/**
+ * Edit ALL stored Telegram messages for an order.
+ *
+ * When an admin presses Verify/Reject on one device, we need to update the
+ * message on EVERY device — not just the one where the button was pressed.
+ * This function reads the order's `telegramMessageIds` field (a JSON array
+ * of {chatId, messageId} pairs) and calls editTelegramMessage() for each.
+ *
+ * If the order has no stored message IDs (e.g. old orders from before this
+ * feature), this is a no-op.
+ */
+export async function editAllTelegramMessagesForOrder(
+  orderId: string,
+  text: string
+): Promise<void> {
+  try {
+    const order = await db.order.findUnique({
+      where: { id: orderId },
+      select: { telegramMessageIds: true },
+    })
+    if (!order?.telegramMessageIds) return
+
+    let pairs: { chatId: string; messageId: number }[] = []
+    try {
+      pairs = JSON.parse(order.telegramMessageIds)
+    } catch {
+      console.error('[telegram] failed to parse telegramMessageIds for order', orderId)
+      return
+    }
+
+    // Edit all messages in parallel
+    await Promise.all(
+      pairs.map((p) => editTelegramMessage(p.chatId, p.messageId, text))
+    )
+  } catch (e) {
+    console.error(`[telegram] editAllTelegramMessagesForOrder error: ${(e as Error).message}`)
   }
 }
 
@@ -185,13 +278,17 @@ function pendingKeyboard(order: any, mapsLink: string | null, directionsLink: st
 }
 
 /**
- * Notify the store owner that a new order has been placed.
+ * Notify all configured chats that a new order has been placed.
  * Includes full order details + map link + call link.
+ *
+ * Returns the array of per-chat message results (so the caller can store
+ * the message IDs if needed — though for new-order alerts there are no
+ * buttons to edit later, so storage is optional).
  */
-export async function notifyNewOrder(orderId: string): Promise<void> {
+export async function notifyNewOrder(orderId: string): Promise<TelegramMessageResult[]> {
   try {
     const detail = await buildOrderDetail(orderId)
-    if (!detail) return
+    if (!detail) return []
     const { text, order } = detail
 
     const header =
@@ -200,21 +297,22 @@ export async function notifyNewOrder(orderId: string): Promise<void> {
         : `🆕 <b>New Order ${order.orderNumber}</b>`
 
     const msg = `${header}\n\n${text}`
-    await sendTelegramMessage(msg)
+    return await sendTelegramMessage(msg)
   } catch (e) {
     console.error(`[telegram] notifyNewOrder error: ${(e as Error).message}`)
+    return []
   }
 }
 
 /**
- * Notify the store owner that a UPI payment has been verified and received.
+ * Notify all configured chats that a UPI payment has been verified and received.
  * Called when Gemini auto-approves OR when the admin manually approves
  * (from the web panel OR from a Telegram button press).
  */
-export async function notifyPaymentReceived(orderId: string, utr?: string | null): Promise<void> {
+export async function notifyPaymentReceived(orderId: string, utr?: string | null): Promise<TelegramMessageResult[]> {
   try {
     const detail = await buildOrderDetail(orderId)
-    if (!detail) return
+    if (!detail) return []
     const { text, order } = detail
 
     const msg = [
@@ -225,25 +323,31 @@ export async function notifyPaymentReceived(orderId: string, utr?: string | null
       text,
     ].join('\n')
 
-    await sendTelegramMessage(msg)
+    return await sendTelegramMessage(msg)
   } catch (e) {
     console.error(`[telegram] notifyPaymentReceived error: ${(e as Error).message}`)
+    return []
   }
 }
 
 /**
- * Notify the store owner that a UPI payment is pending manual verification.
+ * Notify all configured chats that a UPI payment is pending manual verification.
  * This is called when:
  *   - Gemini auto-verification FAILS (screenshot uploaded but checks failed)
  *   - Customer chose "Continue without screenshot" (manual review requested)
  *
  * Sends a message with inline Verify/Reject buttons so the admin can act
  * directly from Telegram in one tap.
+ *
+ * CRITICAL: The caller MUST store the returned array of {chatId, messageId}
+ * pairs on the order record (order.telegramMessageIds) so that when a button
+ * is pressed, the webhook can edit ALL messages across all devices — not just
+ * the one where the button was pressed.
  */
-export async function notifyPaymentPendingManual(orderId: string): Promise<void> {
+export async function notifyPaymentPendingManual(orderId: string): Promise<TelegramMessageResult[]> {
   try {
     const detail = await buildOrderDetail(orderId)
-    if (!detail) return
+    if (!detail) return []
     const { text, order, lat, lng, mapsLink } = detail
 
     const directionsLink =
@@ -262,10 +366,11 @@ export async function notifyPaymentPendingManual(orderId: string): Promise<void>
       `<i>Tap a button below to verify or reject:</i>`,
     ].join('\n')
 
-    await sendTelegramMessage(msg, {
+    return await sendTelegramMessage(msg, {
       reply_markup: pendingKeyboard(order, mapsLink, directionsLink),
     })
   } catch (e) {
     console.error(`[telegram] notifyPaymentPendingManual error: ${(e as Error).message}`)
+    return []
   }
 }
