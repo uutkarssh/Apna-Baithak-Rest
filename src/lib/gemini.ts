@@ -29,16 +29,16 @@ export type VerificationChecks = {
   timestamp: boolean
   amount: boolean
   payee: boolean
-  utr: boolean // true if UTR is present AND not previously used (caller checks reuse)
+  utr: boolean // always true — UTR is informational only, no longer a gate
   failedChecks: string[]
 }
 
 // Gemini Vision API endpoint.
-// Tries gemini-2.0-flash first (latest); the calling code falls back to
-// pending-verification if the API/model is unavailable, so a wrong model
-// name never blocks the customer.
+// Using gemini-2.5-flash (latest flash model with vision capabilities).
+// The calling code falls back to pending-verification if the API/model is
+// unavailable, so a wrong model name never blocks the customer.
 const GEMINI_ENDPOINT =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent'
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
 
 /**
  * Calls Gemini Vision with the screenshot + a structured prompt.
@@ -197,11 +197,21 @@ Return ONLY the JSON object. Do not wrap it in markdown code fences.`
 }
 
 /**
- * Run all 5 verification checks against the Gemini result + the expected values.
+ * Run verification checks against the Gemini result + the expected values.
  * Returns which checks passed/failed.
  *
- * The `utrReuse` param is whether the extracted UTR was already used to verify
- * a DIFFERENT order (the caller queries the DB for this).
+ * Checks (4 — UTR check REMOVED):
+ *   (a) authenticity — the image looks genuine, not tampered
+ *   (b) timestamp  — extracted timestamp is within ±10 min of server time
+ *   (c) amount     — extracted amount matches the expected order total
+ *   (d) payee      — extracted payee matches the store's UPI ID or name
+ *
+ * The UTR check was REMOVED because modern UPI apps (especially Google Pay)
+ * block screenshots on the payment success screen for security, so the UTR
+ * number is often not visible. Customers can share a receipt from their
+ * transaction history, but even those may redact the UTR. UTR is still
+ * EXTRACTED for informational purposes (stored on the attempt record for
+ * admin review), but it is no longer a pass/fail criterion.
  */
 export function runVerificationChecks(params: {
   gemini: GeminiVerification
@@ -209,9 +219,8 @@ export function runVerificationChecks(params: {
   expectedPayeeId: string
   expectedPayeeName: string
   serverTime: Date
-  utrReuse: boolean // true = UTR already used on another verified order
 }): VerificationChecks {
-  const { gemini, expectedAmount, expectedPayeeId, expectedPayeeName, serverTime, utrReuse } = params
+  const { gemini, expectedAmount, expectedPayeeId, expectedPayeeName, serverTime } = params
 
   // (a) Authenticity
   const authentic = gemini.is_authentic === true
@@ -233,17 +242,20 @@ export function runVerificationChecks(params: {
   // (d) Payee — matches either the UPI ID or the name (case-insensitive, trimmed)
   const payeeOk = matchPayee(gemini.extracted_payee, expectedPayeeId, expectedPayeeName)
 
-  // (e) UTR — present AND not reused on another verified order
-  const utrOk = Boolean(gemini.extracted_utr) && !utrReuse
+  // NOTE: UTR check is intentionally REMOVED. The UTR is still extracted and
+  // stored on the attempt record for admin review, but it is no longer a
+  // pass/fail criterion. Modern UPI apps often don't show the UTR in
+  // screenshots (GPay blocks screenshots, shared receipts may redact it).
+  const utr = true // always pass — UTR is informational only, not a gate
 
   const failedChecks: string[] = []
   if (!authentic) failedChecks.push('authenticity')
   if (!timestampOk) failedChecks.push('timestamp')
   if (!amountOk) failedChecks.push('amount')
   if (!payeeOk) failedChecks.push('payee')
-  if (!utrOk) failedChecks.push('utr')
+  // UTR is never added to failedChecks — it's not a gate anymore
 
-  return { authentic, timestamp: timestampOk, amount: amountOk, payee: payeeOk, utr: utrOk, failedChecks }
+  return { authentic, timestamp: timestampOk, amount: amountOk, payee: payeeOk, utr, failedChecks }
 }
 
 function matchPayee(

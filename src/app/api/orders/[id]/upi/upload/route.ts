@@ -133,32 +133,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     console.error('[upi/upload] gemini error:', geminiError)
   }
 
-  // 3. Run the 5 checks (or skip if Gemini failed)
+  // 3. Run the verification checks (UTR check REMOVED — see gemini.ts)
+  //    Checks: authenticity + timestamp + amount + payee (4 checks, not 5)
   let checks
   let failedChecks: string[]
   let allPassed: boolean
 
   if (geminiResult) {
-    // Check UTR reuse across OTHER verified orders
-    let utrReuse = false
-    if (geminiResult.extracted_utr) {
-      const existing = await db.paymentAttempt.findFirst({
-        where: {
-          geminiExtractedUtr: geminiResult.extracted_utr,
-          status: 'VERIFIED',
-          NOT: { id: attemptId },
-        },
-      })
-      utrReuse = !!existing
-    }
-
+    // NOTE: UTR reuse check is REMOVED. UTR is no longer a pass/fail criterion
+    // because modern UPI apps often don't show the UTR in screenshots. The UTR
+    // is still extracted and stored on the attempt record for admin review.
     checks = runVerificationChecks({
       gemini: geminiResult,
       expectedAmount: order.totalAmount,
       expectedPayeeId: UPI_CONFIG.payeeId,
       expectedPayeeName: UPI_CONFIG.payeeName,
       serverTime: now,
-      utrReuse,
     })
     failedChecks = checks.failedChecks
     allPassed = failedChecks.length === 0
