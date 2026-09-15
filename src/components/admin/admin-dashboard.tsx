@@ -906,7 +906,7 @@ function MenuTab() {
                   )}
                   {!it.isAvailable && (
                     <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-700">
-                      HIDDEN
+                      OUT OF STOCK
                     </span>
                   )}
                 </div>
@@ -914,6 +914,27 @@ function MenuTab() {
                   {it.category.name} · {rupees(it.price)} · {it.images.length}/{MAX_ITEM_IMAGES} images
                 </p>
               </div>
+              {/* Quick stock toggle — no need to open the edit form */}
+              <button
+                onClick={async () => {
+                  const res = await fetch(`/api/admin/menu/items/${it.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ isAvailable: !it.isAvailable }),
+                  })
+                  if (!res.ok) { toast.error('Failed to toggle'); return }
+                  toast.success(it.isAvailable ? 'Marked as Out of Stock' : 'Marked as In Stock')
+                  qc.invalidateQueries({ queryKey: ['admin-items'] })
+                }}
+                className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[10px] font-bold transition ${
+                  it.isAvailable
+                    ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                    : 'bg-red-100 text-red-700 hover:bg-red-200'
+                }`}
+                title={it.isAvailable ? 'Click to mark as Out of Stock' : 'Click to mark as In Stock'}
+              >
+                {it.isAvailable ? 'IN STOCK' : 'OUT'}
+              </button>
               <button
                 onClick={() => setEditing(it.id)}
                 className="grid h-9 w-9 place-items-center rounded-lg bg-muted text-foreground hover:bg-brand-softer"

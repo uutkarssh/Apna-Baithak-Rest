@@ -55,6 +55,24 @@ export function CheckoutView() {
   })
   const isAcceptingOrders = settingsData?.isAcceptingOrders ?? true
 
+  // Fetch ALL menu items to check current availability of items in the cart.
+  // This blocks checkout if any cart item was marked out of stock by the
+  // admin while it sat in the customer's cart.
+  const { data: menuData } = useQuery({
+    queryKey: ['menu-items', 'checkout-availability'],
+    queryFn: async () => {
+      const res = await fetch('/api/menu/items')
+      if (!res.ok) return { items: [] }
+      return res.json() as Promise<{ items: { id: string; isAvailable: boolean; name: string }[] }>
+    },
+    enabled: lines.length > 0,
+    refetchInterval: 30_000,
+  })
+  const outOfStockNames = (menuData?.items ?? [])
+    .filter((it) => !it.isAvailable && lines.some((l) => l.itemId === it.id))
+    .map((it) => it.name)
+  const hasOutOfStockItems = outOfStockNames.length > 0
+
   const { data } = useQuery({
     queryKey: ['addresses'],
     queryFn: async () => {
@@ -332,15 +350,22 @@ export function CheckoutView() {
       </div>
 
       <div className="sticky bottom-0 z-20 border-t border-border bg-background px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+        {hasOutOfStockItems && (
+          <div className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-center text-xs font-bold text-red-600">
+            Out of stock: {outOfStockNames.join(', ')} — remove from cart to proceed
+          </div>
+        )}
         <button
           onClick={placeOrder}
-          disabled={placing || authLoading || !profile?.phone?.trim() || !chosen || lines.length === 0 || isBlocked || !isAcceptingOrders}
+          disabled={placing || authLoading || !profile?.phone?.trim() || !chosen || lines.length === 0 || isBlocked || !isAcceptingOrders || hasOutOfStockItems}
           className="flex w-full items-center justify-between gap-3 rounded-xl bg-brand px-5 py-3.5 text-brand-foreground shadow-md transition active:scale-[0.99] disabled:opacity-50"
         >
           <span className="flex items-center gap-2 text-sm font-bold">
             {placing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {placing
               ? 'Placing order…'
+              : hasOutOfStockItems
+              ? 'Out of stock items'
               : !isAcceptingOrders
               ? 'Orders paused'
               : isBlocked

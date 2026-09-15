@@ -254,13 +254,19 @@ export function ItemDetailView() {
               </span>
               <span className="text-base font-extrabold text-foreground">{rupees(price * qty)}</span>
             </div>
-            <motion.button
-              whileTap={{ scale: 0.97 }}
-              onClick={inCart ? updateCartQty : addToCart}
-              className="flex-[1.4] rounded-xl bg-brand py-3 text-center text-sm font-bold text-brand-foreground shadow-md transition hover:brightness-105"
-            >
-              {inCart ? `Add ${qty} more · ${rupees(price * qty)}` : 'Add to cart'}
-            </motion.button>
+            {!item.isAvailable ? (
+              <div className="flex-[1.4] rounded-xl bg-red-100 py-3 text-center text-sm font-bold text-red-600">
+                Out of Stock
+              </div>
+            ) : (
+              <motion.button
+                whileTap={{ scale: 0.97 }}
+                onClick={inCart ? updateCartQty : addToCart}
+                className="flex-[1.4] rounded-xl bg-brand py-3 text-center text-sm font-bold text-brand-foreground shadow-md transition hover:brightness-105"
+              >
+                {inCart ? `Add ${qty} more · ${rupees(price * qty)}` : 'Add to cart'}
+              </motion.button>
+            )}
           </div>
         </div>
       )}

@@ -8,17 +8,15 @@ import { db } from '@/lib/db'
 // items appear here and in what order, via the admin panel's drag-and-drop
 // featured-items manager (see /api/admin/menu/featured).
 //
-// Only available items are returned (isAvailable=true) — an item that's
-// marked featured but temporarily marked unavailable won't show on the
-// homepage until it's available again.
-//
+// Returns ALL featured items including those marked isAvailable=false (out
+// of stock). Out-of-stock items remain visible so customers can see they
+// exist — the frontend disables the ADD button and shows "Out of Stock".
 // If zero items are featured, returns an empty array. The homepage handles
 // this gracefully by hiding the Featured Items section entirely.
 export async function GET() {
   const items = await db.menuItem.findMany({
     where: {
       isFeatured: true,
-      isAvailable: true,
     },
     orderBy: [{ featuredOrder: 'asc' }, { name: 'asc' }],
     select: {
@@ -28,6 +26,7 @@ export async function GET() {
       description: true,
       price: true,
       isVeg: true,
+      isAvailable: true,
       prepTimeMins: true,
       calories: true,
       rating: true,
@@ -44,6 +43,7 @@ export async function GET() {
       description: it.description,
       price: it.price,
       isVeg: it.isVeg,
+      isAvailable: it.isAvailable,
       prepTimeMins: it.prepTimeMins,
       calories: it.calories,
       rating: it.rating,

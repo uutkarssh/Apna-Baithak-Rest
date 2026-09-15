@@ -13,6 +13,7 @@ import { rupees } from '@/lib/format'
 import { RESTAURANT } from '@/lib/constants'
 import { deliveryChargeForDistance, checkOrderEligibility, remainingForFreeDelivery, MIN_ORDER_SUBTOTAL, FAR_DISTANCE_THRESHOLD_KM, FAR_MIN_ORDER_SUBTOTAL, FREE_DELIVERY_OVERRIDE } from '@/lib/delivery'
 import type { Address } from '@/lib/types'
+import { toast } from 'sonner'
 
 export function CartView() {
   const back = useApp((s) => s.back)
@@ -27,6 +28,32 @@ export function CartView() {
   const decrement = useCart((s) => s.decrement)
   const removeItem = useCart((s) => s.removeItem)
   const subtotal = useCart((s) => s.subtotal())
+
+  // Fetch ALL menu items to check current availability of items in the cart.
+  // This catches the edge case where an item was in stock when added to cart,
+  // but the admin marked it out of stock before the customer checked out.
+  // The cart page shows the item as out-of-stock and blocks checkout.
+  const { data: menuData } = useQuery({
+    queryKey: ['menu-items', 'cart-availability'],
+    queryFn: async () => {
+      const res = await fetch('/api/menu/items')
+      if (!res.ok) return { items: [] }
+      return res.json() as Promise<{ items: { id: string; isAvailable: boolean }[] }>
+    },
+    // Only fetch when there are items in the cart
+    enabled: lines.length > 0,
+    // Poll every 30s so the customer sees updated stock status without
+    // needing to manually refresh
+    refetchInterval: 30_000,
+  })
+  // Build a Set of item IDs that are currently out of stock
+  const outOfStockIds = new Set(
+    (menuData?.items ?? [])
+      .filter((it) => !it.isAvailable)
+      .map((it) => it.id)
+  )
+  // Check if any cart line is now out of stock
+  const hasOutOfStockItems = lines.some((l) => outOfStockIds.has(l.itemId))
 
   const { data, isLoading: addrLoading } = useQuery({
     queryKey: ['addresses'],
@@ -80,6 +107,12 @@ export function CartView() {
     if (!profile) {
       // Remember cart as the return destination after login.
       goToLogin('cart')
+      return
+    }
+    // Block checkout if any cart item is out of stock — customer must remove
+    // the out-of-stock item(s) before proceeding.
+    if (hasOutOfStockItems) {
+      toast.error('Some items in your cart are out of stock. Please remove them to proceed.')
       return
     }
     if (!chosen) {
@@ -177,10 +210,16 @@ export function CartView() {
               </button>
             </div>
             <div className="flex flex-col gap-2.5">
-              {lines.map((l) => (
+              {lines.map((l) => {
+                const isOutOfStock = outOfStockIds.has(l.itemId)
+                return (
                 <div
                   key={l.itemId}
-                  className="flex items-center gap-3 rounded-2xl border border-border/60 bg-card p-2.5 shadow-sm"
+                  className={`flex items-center gap-3 rounded-2xl border p-2.5 shadow-sm ${
+                    isOutOfStock
+                      ? 'border-red-300 bg-red-50/50'
+                      : 'border-border/60 bg-card'
+                  }`}
                 >
                   <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-muted">
                     {l.imageUrl ? (
@@ -191,7 +230,11 @@ export function CartView() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <h4 className="line-clamp-1 text-sm font-bold text-foreground">{l.name}</h4>
-                    <p className="text-xs text-muted-foreground">{rupees(l.price)} each</p>
+                    {isOutOfStock ? (
+                      <p className="text-[11px] font-bold text-red-600">Out of Stock — remove to proceed</p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">{rupees(l.price)} each</p>
+                    )}
                     <button
                       onClick={() => removeItem(l.itemId)}
                       className="mt-0.5 text-[11px] font-medium text-destructive"
@@ -211,7 +254,8 @@ export function CartView() {
                     </span>
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           </section>
 
@@ -315,19 +359,25 @@ export function CartView() {
       {/* Sticky checkout bar */}
       {lines.length > 0 && (
         <div className="sticky bottom-0 z-20 border-t border-border bg-background px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+          {hasOutOfStockItems && (
+            <p className="mb-2 rounded-lg bg-red-50 px-3 py-1.5 text-center text-xs font-bold text-red-600">
+              Remove out-of-stock items to proceed
+            </p>
+          )}
           <button
             onClick={checkout}
-            className="flex w-full items-center justify-between gap-3 rounded-xl bg-brand px-5 py-3.5 text-brand-foreground shadow-md transition active:scale-[0.99]"
+            disabled={hasOutOfStockItems}
+            className="flex w-full items-center justify-between gap-3 rounded-xl bg-brand px-5 py-3.5 text-brand-foreground shadow-md transition active:scale-[0.99] disabled:opacity-50"
           >
             <span className="flex flex-col items-start">
               <span className="text-[11px] font-medium uppercase tracking-wide opacity-80">
-                {chosen ? `${chosen.houseFlat}, ${chosen.city}` : 'Select address'}
+                {hasOutOfStockItems ? 'Out of stock items in cart' : chosen ? `${chosen.houseFlat}, ${chosen.city}` : 'Select address'}
               </span>
               <span className="text-base font-extrabold">{rupees(total)} · {lines.reduce((n, l) => n + l.quantity, 0)} items</span>
             </span>
             <span className="flex items-center gap-1 text-sm font-bold">
-              {profile ? 'Place Order' : 'Sign in to order'}
-              <ArrowRight className="h-4 w-4" />
+              {hasOutOfStockItems ? 'Blocked' : profile ? 'Place Order' : 'Sign in to order'}
+              {!hasOutOfStockItems && <ArrowRight className="h-4 w-4" />}
             </span>
           </button>
         </div>

@@ -130,7 +130,11 @@ export function ItemCard({ item, index = 0 }: { item: MenuItem; index?: number }
       {/* Price + ADD/Stepper — sibling of the clickable area */}
       <div className="flex items-center justify-between gap-2 px-3 pb-3">
         <span className="text-base font-extrabold text-foreground">{rupees(item.price)}</span>
-        {qty > 0 ? (
+        {!item.isAvailable ? (
+          <span className="rounded-full bg-red-100 px-4 py-1.5 text-xs font-bold text-red-600">
+            Out of Stock
+          </span>
+        ) : qty > 0 ? (
           <QtyStepper
             qty={qty}
             onInc={() => increment(item.id)}
@@ -203,7 +207,11 @@ export function ItemRow({ item, index = 0 }: { item: MenuItem; index?: number })
       </button>
 
       {/* ADD / Stepper — sibling */}
-      {qty > 0 ? (
+      {!item.isAvailable ? (
+        <span className="shrink-0 rounded-full bg-red-100 px-4 py-1.5 text-xs font-bold text-red-600">
+          Out of Stock
+        </span>
+      ) : qty > 0 ? (
         <QtyStepper
           qty={qty}
           onInc={() => increment(item.id)}

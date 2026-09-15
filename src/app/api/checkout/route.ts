@@ -110,13 +110,42 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Fetch live menu items (re-validate price/availability server-side)
+  // Fetch live menu items (re-validate price/availability server-side).
+  // Fetch ALL items in the cart (not just isAvailable=true) so we can
+  // check for out-of-stock items and return a clear error naming the
+  // specific item(s) that are unavailable.
   const itemIds = items.map((i: any) => i.itemId)
   const menuItems = await db.menuItem.findMany({
-    where: { id: { in: itemIds }, isAvailable: true },
+    where: { id: { in: itemIds } },
     include: { images: { orderBy: { sortOrder: 'asc' }, take: 1 } },
   })
   const byId = new Map(menuItems.map((m) => [m.id, m]))
+
+  // === Out-of-stock check ===
+  // If any item in the cart is currently marked isAvailable=false, reject
+  // with a clear message naming the specific item(s). This catches the
+  // edge case where an item was in stock when added to cart, but the admin
+  // marked it out of stock before the customer checked out.
+  const outOfStockItems = items
+    .map((i: any) => {
+      const m = byId.get(i.itemId)
+      if (!m) return null
+      if (!m.isAvailable) return m.name
+      return null
+    })
+    .filter((x: string | null): x is string => x !== null)
+
+  if (outOfStockItems.length > 0) {
+    const itemNames = outOfStockItems.join(', ')
+    return NextResponse.json(
+      {
+        error: `The following item(s) are currently out of stock: ${itemNames}. Please remove them from your cart to proceed.`,
+        code: 'ITEMS_OUT_OF_STOCK',
+        outOfStockItems,
+      },
+      { status: 400 }
+    )
+  }
 
   let itemTotal = 0
   const orderItemsData = items.map((i: any) => {

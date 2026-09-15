@@ -3,17 +3,18 @@ import { db } from '@/lib/db'
 
 // GET /api/menu/items?category=pizza            -> items in a category
 // GET /api/menu/items?search=pizza               -> items matching a search query
-// GET /api/menu/items                             -> all items (home featured rail)
+// GET /api/menu/items                             -> all items
+//
+// Returns ALL items including those marked isAvailable=false (out of stock).
+// Out-of-stock items remain VISIBLE in the menu so customers can see they
+// exist — the frontend disables the ADD button and shows "Out of Stock".
 export async function GET(req: NextRequest) {
   const cat = req.nextUrl.searchParams.get('category')
   const q = req.nextUrl.searchParams.get('search')?.trim()
 
-  const where: any = { isAvailable: true }
+  const where: any = {}
   if (cat) where.category = { slug: cat }
   if (q) {
-    // SQLite's `contains` uses LIKE which is case-insensitive for ASCII by
-    // default, so searching "pizza" will match "Pizza", "PIZZA", etc.
-    // (Note: mode: 'insensitive' is PostgreSQL-only and would crash on SQLite.)
     where.OR = [
       { name: { contains: q } },
       { description: { contains: q } },
@@ -37,6 +38,7 @@ export async function GET(req: NextRequest) {
       description: it.description,
       price: it.price,
       isVeg: it.isVeg,
+      isAvailable: it.isAvailable,
       prepTimeMins: it.prepTimeMins,
       calories: it.calories,
       rating: it.rating,
