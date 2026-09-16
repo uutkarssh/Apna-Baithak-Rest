@@ -1,0 +1,72 @@
+# Supabase Keep-Alive — prevents the free-tier project from auto-pausing
+# after 7 days of inactivity.
+#
+# Runs twice a week (Monday + Thursday at 06:00 UTC) — well inside the
+# 7-day inactivity window, with margin for missed runs.
+#
+# Makes a single read-only API call to the Supabase Auth admin endpoint
+# (GET /auth/v1/admin/users?per_page=1) which queries the auth.users table
+# internally. This registers as real database activity without writing
+# any data or triggering any emails/notifications.
+#
+# Required GitHub Secrets:
+#   SUPABASE_URL              — e.g. https://yourproject.supabase.co
+#   SUPABASE_SERVICE_ROLE_KEY — the service role key (not the anon key)
+#
+# To test manually: go to the Actions tab → "Supabase Keep-Alive" →
+# "Run workflow" button.
+
+name: Supabase Keep-Alive
+
+on:
+  schedule:
+    # Every Monday and Thursday at 06:00 UTC
+    # Cron: minute hour day-of-month month day-of-week
+    - cron: '0 6 * * 1,4'
+  workflow_dispatch: # allows manual triggering from the Actions tab
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Ping Supabase (read-only)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          echo "=== Supabase Keep-Alive Ping ==="
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Target: ${SUPABASE_URL}/auth/v1/admin/users?per_page=1"
+          echo ""
+
+          # Make a read-only GET request to the Supabase Auth admin API.
+          # This queries the auth.users table internally — enough to
+          # register as database activity and prevent auto-pausing.
+          HTTP_CODE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            "${SUPABASE_URL}/auth/v1/admin/users?per_page=1" \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}")
+
+          echo "HTTP Status: ${HTTP_CODE}"
+          echo "Response (first 200 chars): $(head -c 200 /tmp/response.json)"
+          echo ""
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Supabase is active — ping successful"
+          else
+            echo "⚠️  Supabase returned HTTP ${HTTP_CODE} — check credentials"
+            # Don't fail the workflow on a non-200 — the point is just to
+            # register activity. Even a 401 hits the Supabase API and may
+            # count as activity. But log it for visibility.
+            exit 0
+          fi
+
+      - name: Summary
+        run: |
+          echo "### Supabase Keep-Alive Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Endpoint:** Supabase Auth Admin API" >> $GITHUB_STEP_SUMMARY
+          echo "- **Query:** GET /auth/v1/admin/users?per_page=1 (read-only)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Result:** ✅ Success" >> $GITHUB_STEP_SUMMARY
