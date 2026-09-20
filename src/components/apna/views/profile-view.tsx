@@ -29,6 +29,7 @@ import { PAYMENT_MODES, RESTAURANT } from '@/lib/constants'
 import type { Address, Order } from '@/lib/types'
 import { toast } from 'sonner'
 import { motion, AnimatePresence } from 'framer-motion'
+import { CustomerPushSettings } from '@/components/apna/customer-push-settings'
 
 export function ProfileView() {
   const back = useApp((s) => s.back)
@@ -175,6 +176,11 @@ export function ProfileView() {
           />
         </div>
       </section>
+
+      {/* Notifications toggle — persistent option so customers can enable push
+          anytime from their profile, not just on the post-order screen.
+          Hidden for unauthed users (push.subscribe needs a customer row). */}
+      <CustomerPushSettings />
 
       <FavoritesSection />
 
