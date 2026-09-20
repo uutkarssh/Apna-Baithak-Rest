@@ -16,6 +16,7 @@ import { useCart } from '@/store/cart'
 import { rupees } from '@/lib/format'
 import { RESTAURANT } from '@/lib/constants'
 import type { Order } from '@/lib/types'
+import { CustomerPushOptIn } from '@/components/apna/customer-push-opt-in'
 
 /**
  * Order Confirmation screen — shown after:
@@ -156,6 +157,11 @@ export function OrderConfirmationView({ order }: { order: Order }) {
             </p>
           )}
         </section>
+
+        {/* Web Push opt-in — shown only on the order-confirmation screen,
+            not on page load. Auto-hides if push is unsupported or already
+            subscribed. See component for full rationale. */}
+        <CustomerPushOptIn />
 
         {/* Pending verification info box */}
         {isPendingVerification && (

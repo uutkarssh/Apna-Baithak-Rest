@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { isAdminAuthorized } from '@/lib/admin-guard'
 import { ORDER_STATUSES, type OrderStatus } from '@/lib/constants'
+import { notifyCustomerOrderStatus } from '@/lib/push'
 
 // PATCH /api/admin/orders/[id] — update order fields
 //
@@ -84,6 +85,22 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     where: { id },
     data: updateData,
   })
+
+  // Fire Web Push to the customer when their order's delivery status changes.
+  // No-op if the customer has no active push subscription (e.g. didn't opt in
+  // after placing the order). Telegram is admin-only — there's no existing
+  // customer-facing channel to mirror here, so push is the customer's primary
+  // real-time status update.
+  if (data.status) {
+    notifyCustomerOrderStatus({
+      customerId: existing.customerId,
+      orderId: id,
+      orderNumber: existing.orderNumber,
+      status: data.status,
+    }).catch((e) =>
+      console.error('[admin/orders PATCH] customer push notify error:', e)
+    )
+  }
 
   return NextResponse.json({ order: updated })
 }

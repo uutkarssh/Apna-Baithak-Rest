@@ -6,6 +6,7 @@ import { orderNumberFromSeq } from '@/lib/format'
 import { distanceFromRestaurant } from '@/lib/geo'
 import { computeDeliveryCharge, isDistanceServiceable } from '@/lib/delivery'
 import { notifyNewOrder } from '@/lib/telegram'
+import { notifyAdminsNewOrder } from '@/lib/push'
 
 // POST /api/checkout — creates a new order from the current cart.
 // Body: {
@@ -286,6 +287,19 @@ export async function POST(req: NextRequest) {
   // checkout if Telegram is down)
   notifyNewOrder(order.id).catch((e) =>
     console.error('[checkout] telegram notify error:', e)
+  )
+
+  // Fire Web Push new-order notification to all admin subscriptions.
+  // Same trigger point as Telegram — runs in parallel, doesn't block checkout.
+  // If no admin subscriptions are registered, this is a no-op (total=0).
+  notifyAdminsNewOrder({
+    orderId: order.id,
+    orderNumber: order.orderNumber,
+    totalAmount: order.totalAmount,
+    customerName: order.customerName,
+    paymentMode: order.paymentMode,
+  }).catch((e) =>
+    console.error('[checkout] push notify error:', e)
   )
 
   return NextResponse.json({ order })

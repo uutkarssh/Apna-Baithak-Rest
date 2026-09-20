@@ -112,3 +112,68 @@ self.addEventListener('fetch', (event) => {
     )
   }
 })
+
+// ===== Web Push (VAPID) event handlers =====
+// The customer-facing service worker receives push events when:
+//   - The customer's order status changes (PREPARING / OUT_FOR_DELIVERY / DELIVERED / CANCELLED)
+//   - (Admin subscriptions register under /admin-sw.js, not here.)
+//
+// Payload shape (sent from src/lib/push.ts):
+//   { title: string, body: string, url?: string, tag?: string }
+//
+// `tag` is set per-order-id so a new push for the same order replaces the
+// previous notification in the system tray (no stacking).
+
+self.addEventListener('push', (event) => {
+  let data = {}
+  try {
+    data = event.data ? event.data.json() : {}
+  } catch (e) {
+    // Fallback to plain text if payload isn't JSON
+    data = { title: 'Apna Baithak', body: event.data ? event.data.text() : '' }
+  }
+
+  const title = data.title || 'Apna Baithak'
+  const options = {
+    body: data.body || '',
+    icon: '/brand/icon-192x192.png',
+    badge: '/brand/icon-192x192.png',
+    data: { url: data.url || '/' },
+    tag: data.tag || undefined,
+    vibrate: [80, 40, 80],
+  }
+
+  event.waitUntil(self.registration.showNotification(title, options))
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const targetUrl = (event.notification.data && event.notification.data.url) || '/'
+
+  event.waitUntil(
+    (async () => {
+      const allClients = await self.clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true,
+      })
+
+      // If a window client is already open on the same origin, focus it
+      // and navigate it to the target URL. Otherwise open a new window.
+      const targetClient = allClients.find((client) =>
+        client.url.startsWith(self.location.origin)
+      )
+
+      if (targetClient) {
+        try {
+          await targetClient.focus()
+          // Post a message so the client app can route itself (the React app
+          // listens for this in src/hooks/use-push-subscription.ts).
+          targetClient.postMessage({ type: 'PUSH_CLICK', url: targetUrl })
+        } catch {}
+        return
+      }
+
+      await self.clients.openWindow(targetUrl)
+    })()
+  )
+})

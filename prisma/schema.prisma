@@ -284,3 +284,36 @@ model RestaurantConfig {
 
   @@map("restaurant_config")
 }
+
+// ===== Web Push Subscriptions =====
+// One person (admin or customer) can have multiple subscriptions — same person
+// on phone + laptop, same person on multiple browsers. Mirrors the multi-chat
+// design already used for Telegram (TELEGRAM_CHAT_IDS).
+//
+// owner_type:
+//   'admin'     — admin's browser/PWA subscription (receives new-order alerts)
+//   'customer'  — customer's browser/PWA subscription (receives their own order
+//                 status-change alerts). owner_id = Customer.id
+//
+// Cleanup: when web-push returns 403/404/410 for an endpoint, we delete the
+// row (see src/lib/push.ts sendPush). last_failed_at is set on any failure for
+// future observability; not currently used to silently drop subscriptions but
+// available if we want to add a "retry N times then drop" policy later.
+//
+// Unique on `endpoint` so that re-subscribing the same browser upserts instead
+// of duplicating — the push subscription object returned by PushManager.subscribe()
+// is stable for the same browser+SW-scope pair until the user clears site data.
+model PushSubscription {
+  id            String   @id @default(cuid())
+  endpoint      String   @unique
+  p256dh        String
+  auth          String
+  ownerType     String
+  ownerId       String?
+  createdAt     DateTime @default(now())
+  lastFailedAt  DateTime?
+
+  @@index([ownerType])
+  @@index([ownerType, ownerId])
+  @@map("push_subscriptions")
+}

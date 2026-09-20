@@ -44,6 +44,7 @@ import { ReviewsPanel } from './reviews-panel'
 import { FeaturedTab } from './featured-tab'
 import { AdminOrderRowSkeleton, StatCardSkeleton, AdminItemRowSkeleton } from '@/components/apna/skeletons'
 import { BrandIcon, BrandWordmark } from '@/components/brand/brand-logo'
+import { AdminPushToggle } from './admin-push-toggle'
 
 type AdminOrder = {
   id: string
@@ -304,6 +305,9 @@ export function AdminDashboard() {
             <span className="hidden sm:inline">{isAcceptingOrders ? 'Accepting Orders' : 'Orders Paused'}</span>
             <span className="sm:hidden">{isAcceptingOrders ? 'Open' : 'Paused'}</span>
           </button>
+          {/* Web Push toggle — admin's per-browser subscription to new-order
+              alerts. Works alongside Telegram, doesn't replace it. */}
+          <AdminPushToggle />
           <button
             onClick={logout}
             className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted"

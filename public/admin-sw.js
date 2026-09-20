@@ -114,3 +114,63 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 });
+
+// ===== Web Push (VAPID) event handlers =====
+// The admin service worker receives push events when:
+//   - A new order is placed (NEW)
+//   - A UPI payment is pending manual verification
+//   - A UPI payment is verified/received
+// (Customer-facing order-status-change pushes are sent to /sw.js, not here.)
+//
+// Payload shape (sent from src/lib/push.ts):
+//   { title: string, body: string, url?: string, tag?: string }
+
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (e) {
+    data = { title: 'AB Admin', body: event.data ? event.data.text() : '' };
+  }
+
+  const title = data.title || 'Apna Baithak Admin';
+  const options = {
+    body: data.body || '',
+    icon: '/admin-brand/icon-192x192.png',
+    badge: '/admin-brand/icon-192x192.png',
+    data: { url: data.url || '/admin' },
+    tag: data.tag || undefined,
+    vibrate: [120, 60, 120],
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || '/admin';
+
+  event.waitUntil(
+    (async () => {
+      const allClients = await self.clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true,
+      });
+
+      // Prefer an already-open admin tab; otherwise open a new one.
+      const adminClient = allClients.find((client) =>
+        client.url.startsWith(self.location.origin + '/admin')
+      );
+
+      if (adminClient) {
+        try {
+          await adminClient.focus();
+          adminClient.postMessage({ type: 'PUSH_CLICK', url: targetUrl });
+        } catch {}
+        return;
+      }
+
+      await self.clients.openWindow(targetUrl);
+    })()
+  );
+});

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { isAdminAuthorized } from '@/lib/admin-guard'
 import { notifyPaymentReceived } from '@/lib/telegram'
+import { notifyPaymentReceivedBoth } from '@/lib/push'
 
 // PATCH /api/admin/orders/[id]/upi-review
 // Admin manually reviews a PENDING_VERIFICATION UPI order and either approves
@@ -69,6 +70,18 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     // Fire the Telegram payment-received alert (same as auto-approve)
     notifyPaymentReceived(orderId, order.verifiedUtr).catch((e) =>
       console.error('[upi-review] telegram notify error:', e)
+    )
+
+    // Fire Web Push to both admin (so other admin browsers know it's verified)
+    // and the customer (so they know their payment went through). Both are
+    // no-ops if no subscriptions exist for those targets.
+    notifyPaymentReceivedBoth({
+      orderId,
+      orderNumber: order.orderNumber,
+      totalAmount: order.totalAmount,
+      customerId: order.customerId,
+    }).catch((e) =>
+      console.error('[upi-review] push notify error:', e)
     )
 
     return NextResponse.json({

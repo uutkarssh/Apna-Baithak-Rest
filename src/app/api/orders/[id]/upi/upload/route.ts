@@ -5,6 +5,7 @@ import { uploadPaymentScreenshot, fetchImageAsBase64 } from '@/lib/storage'
 import { verifyScreenshotWithGemini, runVerificationChecks } from '@/lib/gemini'
 import { UPI_CONFIG } from '@/lib/upi'
 import { notifyPaymentReceived, notifyPaymentPendingManual } from '@/lib/telegram'
+import { notifyPaymentReceivedBoth, notifyAdminsPaymentPending } from '@/lib/push'
 
 // POST /api/orders/[id]/upi/upload
 // multipart/form-data: field "screenshot" (image), field "attemptId" (string)
@@ -209,6 +210,18 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       console.error('[upi/upload] telegram notify error:', e)
     )
 
+    // Fire Web Push to admin + customer. Both are no-ops if no subscriptions
+    // exist for those targets. Same trigger point as Telegram so both channels
+    // fire together and don't drift out of sync.
+    notifyPaymentReceivedBoth({
+      orderId,
+      orderNumber: order.orderNumber,
+      totalAmount: order.totalAmount,
+      customerId: order.customerId,
+    }).catch((e) =>
+      console.error('[upi/upload] push notify error:', e)
+    )
+
     return NextResponse.json({
       outcome: 'VERIFIED',
       message: 'Payment verified! Your order is confirmed.',
@@ -258,6 +271,17 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     } catch (e) {
       console.error('[upi/upload] telegram pending notify error:', e)
     }
+
+    // Also fire a Web Push to admin subscriptions — useful when the admin's
+    // phone is on do-not-disturb (Telegram won't ring) but the PWA push
+    // can still surface the alert.
+    notifyAdminsPaymentPending({
+      orderId,
+      orderNumber: order.orderNumber,
+      totalAmount: order.totalAmount,
+    }).catch((e) =>
+      console.error('[upi/upload] admin push (pending) error:', e)
+    )
 
     return NextResponse.json({
       outcome: 'PENDING_VERIFICATION',

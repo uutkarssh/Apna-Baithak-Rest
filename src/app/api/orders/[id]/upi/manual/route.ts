@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getSupabaseForUser } from '@/lib/supabase-server'
 import { notifyPaymentPendingManual } from '@/lib/telegram'
+import { notifyAdminsPaymentPending } from '@/lib/push'
 
 // POST /api/orders/[id]/upi/manual
 // Customer chose "Continue without screenshot" — they claim to have paid but
@@ -117,6 +118,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   } catch (e) {
     console.error('[upi/manual] telegram notify error:', e)
   }
+
+  // Also fire a Web Push to admin subscriptions — useful when the admin's
+  // phone is on do-not-disturb but the PWA push can still surface the alert.
+  notifyAdminsPaymentPending({
+    orderId,
+    orderNumber: order.orderNumber,
+    totalAmount: order.totalAmount,
+  }).catch((e) =>
+    console.error('[upi/manual] admin push error:', e)
+  )
 
   return NextResponse.json({
     outcome: 'PENDING_VERIFICATION',
