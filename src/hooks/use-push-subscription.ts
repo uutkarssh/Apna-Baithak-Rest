@@ -100,7 +100,12 @@ export function usePushSubscription(ownerType: OwnerType) {
     endpoint: null,
   })
 
-  // On mount: check if push is supported + check existing subscription
+  // On mount: check if push is supported + check existing subscription.
+  //
+  // The hook has a defensive timeout — if navigator.serviceWorker.ready
+  // doesn't resolve within 6 seconds (e.g. on iOS Safari without PWA install,
+  // or if the SW registration failed silently), we fall back to 'unsupported'
+  // so the UI doesn't hang forever on "Checking push status…".
   const refresh = useCallback(async () => {
     if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
       setState({ status: 'unsupported', error: null, endpoint: null })
@@ -117,9 +122,17 @@ export function usePushSubscription(ownerType: OwnerType) {
     }
 
     try {
-      // Wait for the service worker registration (it may not be ready yet
-      // on a fresh page load — ServiceWorkerRegister component registers on mount)
-      const reg = await navigator.serviceWorker.ready
+      // Race navigator.serviceWorker.ready against a 6-second timeout.
+      // If ready doesn't resolve in time, mark as unsupported so the UI
+      // doesn't hang on "Checking push status…" forever.
+      // (Common cause: admin SW registered with wrong scope, so the page
+      //  isn't controlled by any SW and `ready` never resolves.)
+      const reg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Service worker not ready after 6s')), 6000)
+        ),
+      ])
       const existing = await reg.pushManager.getSubscription()
 
       if (existing) {
@@ -145,8 +158,8 @@ export function usePushSubscription(ownerType: OwnerType) {
       setState({ status: 'not-subscribed', error: null, endpoint: null })
     } catch (e: any) {
       setState({
-        status: 'error',
-        error: e?.message || 'Failed to check push status',
+        status: 'unsupported',
+        error: e?.message || 'Push not available on this browser',
         endpoint: null,
       })
     }
