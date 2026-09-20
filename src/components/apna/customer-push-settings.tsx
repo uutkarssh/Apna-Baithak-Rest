@@ -36,6 +36,7 @@ import { Bell, BellOff, Loader2, Smartphone, AlertCircle } from 'lucide-react'
 import { usePushSubscription } from '@/hooks/use-push-subscription'
 import { useAuth } from '@/components/providers/auth-provider'
 import { toast } from 'sonner'
+import { dismissCustomerPushHomePrompt } from '@/components/apna/customer-push-home-prompt'
 
 export function CustomerPushSettings() {
   const push = usePushSubscription('customer')
@@ -223,6 +224,9 @@ export function CustomerPushSettings() {
                 toast.error(r.error || 'Couldn\'t enable notifications')
               } else {
                 toast.success('Notifications on — you\'ll get order status updates')
+                // Cross-dismiss the home-screen banner so it doesn't keep
+                // asking after they've already opted in from the profile page.
+                dismissCustomerPushHomePrompt()
               }
             }}
             disabled={push.status === 'subscribing'}

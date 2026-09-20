@@ -9,6 +9,7 @@ import { ItemCard } from '@/components/apna/item-card'
 import { ItemCardSkeleton, CategorySkeleton } from '@/components/apna/skeletons'
 import { RESTAURANT } from '@/lib/constants'
 import { BrandWordmark } from '@/components/brand/brand-logo'
+import { CustomerPushHomePrompt } from '@/components/apna/customer-push-home-prompt'
 import type { Category, MenuItem } from '@/lib/types'
 
 export function HomeView() {
@@ -110,6 +111,12 @@ export function HomeView() {
           </div>
         </div>
       )}
+
+      {/* Web Push opt-in banner — dismissible, only shows for logged-in
+          customers who haven't enabled push and haven't dismissed this prompt
+          in the last 14 days. Auto-hides for unsupported browsers, denied
+          permission, already-subscribed, etc. See component for full rules. */}
+      <CustomerPushHomePrompt />
 
       {/* Categories — horizontal rail on mobile, responsive grid on >= sm */}
       <section className="px-4 sm:px-0">

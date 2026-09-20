@@ -32,6 +32,7 @@
 // reset localStorage to match reality.
 
 import { useState, useCallback, useEffect } from 'react'
+import { getSupabaseBrowser } from '@/lib/supabase-client'
 
 const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
 const LS_KEY = 'ab-push-subscribed'
@@ -233,10 +234,29 @@ export function usePushSubscription(ownerType: OwnerType) {
         applicationServerKey: asBufferSource(VAPID_PUBLIC_KEY),
       })
 
+      // Build headers. For customer subscriptions, we MUST include the Supabase
+      // access token in the Authorization header — the server's
+      // getSupabaseForUser() prefers the Bearer header over cookies (cookies
+      // alone are unreliable for newly-logged-in sessions). For admin
+      // subscriptions, the admin cookie (ab_admin=1) is all that's needed.
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (ownerType === 'customer') {
+        try {
+          const supabase = getSupabaseBrowser()
+          const { data } = await supabase.auth.getSession()
+          if (data.session?.access_token) {
+            headers.Authorization = `Bearer ${data.session.access_token}`
+          }
+        } catch {
+          // Non-fatal — server will reject if no auth can be derived from
+          // cookies either, and the user will see the error inline.
+        }
+      }
+
       // POST to server
       const res = await fetch('/api/push/subscribe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           subscription: sub.toJSON(),
           ownerType,

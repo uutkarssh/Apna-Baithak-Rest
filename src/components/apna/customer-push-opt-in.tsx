@@ -24,6 +24,7 @@ import { useAuth } from '@/components/providers/auth-provider'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useState } from 'react'
+import { dismissCustomerPushHomePrompt } from '@/components/apna/customer-push-home-prompt'
 
 export function CustomerPushOptIn() {
   const push = usePushSubscription('customer')
@@ -78,6 +79,9 @@ export function CustomerPushOptIn() {
       return
     }
     toast.success('Notifications on — you\'ll get a ping when your order status changes')
+    // Cross-dismiss the home-screen prompt too — they've now opted in,
+    // no need to ask them again from the home banner.
+    dismissCustomerPushHomePrompt()
   }
 
   return (
