@@ -29,6 +29,7 @@
 import { useEffect, useState } from 'react'
 import { Download, Share, Smartphone, Home, Loader2, CheckCircle2, ExternalLink, Bell } from 'lucide-react'
 import { motion } from 'framer-motion'
+import { BrandIcon, BrandWordmark } from '@/components/brand/brand-logo'
 
 type Platform = 'android-installed' | 'ios-installed' | 'android' | 'ios' | 'desktop' | 'standalone' | 'loading'
 
@@ -40,7 +41,26 @@ type BeforeInstallPromptEvent = Event & {
 }
 
 export default function InstallClient() {
-  const [platform, setPlatform] = useState<Platform>('loading')
+  // Detect platform eagerly via lazy initial state. This runs ONCE on first
+  // render (client-side only — SSR returns 'loading' and the effect below
+  // re-checks on mount). Avoids the setState-in-effect lint warning AND avoids
+  // a flash of the "Checking your device…" spinner for most users (they see
+  // the right UI immediately on first paint).
+  const [platform, setPlatform] = useState<Platform>(() => {
+    if (typeof window === 'undefined') return 'loading' // SSR
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as any).standalone === true
+    if (isStandalone) return 'standalone'
+    const ua = navigator.userAgent
+    const isIOS = /iPad|iPhone|iPod/.test(ua) && !(window as any).MSStream
+    const isStandaloneIOS = (window.navigator as any).standalone === true
+    if (isStandaloneIOS) return 'ios-installed'
+    if (isIOS) return 'ios'
+    const isAndroid = /Android/i.test(ua)
+    if (isAndroid) return 'android'
+    return 'desktop'
+  })
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [installing, setInstalling] = useState(false)
   const [installed, setInstalled] = useState(false)
@@ -48,42 +68,10 @@ export default function InstallClient() {
   useEffect(() => {
     if (typeof window === 'undefined') return
 
-    // 1. Check if the PWA is already installed (running in standalone mode)
-    const isStandalone =
-      window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as any).standalone === true
-    if (isStandalone) {
-      setPlatform('standalone')
-      return
-    }
-
-    // 2. Detect OS/browser
-    const ua = navigator.userAgent
-    const isIOS = /iPad|iPhone|iPod/.test(ua) && !(window as any).MSStream
-    const isAndroid = /Android/i.test(ua)
-    const isStandaloneIOS = (window.navigator as any).standalone === true
-
-    if (isStandaloneIOS) {
-      setPlatform('ios-installed')
-      return
-    }
-    if (isIOS) {
-      setPlatform('ios')
-      return
-    }
-    if (isAndroid) {
-      setPlatform('android')
-      // Don't return — keep listening for beforeinstallprompt below
-    } else {
-      // Desktop or other — but still listen for beforeinstallprompt in case
-      // it's a Chromium-based desktop browser that supports PWA install.
-      setPlatform('desktop')
-    }
-
-    // 3. Listen for the beforeinstallprompt event (Android Chrome + desktop Chromium)
-    //    We capture the event but DON'T immediately prompt — we save it for the
-    //    user's tap on the Install button. This is the recommended pattern from
-    //    https://web.dev/articles/install-criteria
+    // Listen for the beforeinstallprompt event (Android Chrome + desktop Chromium)
+    // We capture the event but DON'T immediately prompt — we save it for the
+    // user's tap on the Install button. This is the recommended pattern from
+    // https://web.dev/articles/install-criteria
     function onBeforeInstallPrompt(e: Event) {
       e.preventDefault() // suppress the auto-prompt (Chrome's heuristics are unreliable)
       setDeferredPrompt(e as BeforeInstallPromptEvent)
@@ -92,7 +80,7 @@ export default function InstallClient() {
     }
     window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt)
 
-    // 4. Listen for the appinstalled event — fires after successful install
+    // Listen for the appinstalled event — fires after successful install
     function onAppInstalled() {
       setInstalled(true)
       setDeferredPrompt(null)
@@ -126,12 +114,19 @@ export default function InstallClient() {
   return (
     <main className="min-h-screen bg-gradient-to-br from-brand/5 via-background to-brand/10">
       <div className="mx-auto flex min-h-screen max-w-md flex-col px-5 py-8">
-        {/* Brand header */}
+        {/* Brand header — uses the actual brand logo assets (same as the
+            admin dashboard header and customer app footer). The icon is the
+            "ab" lettermark; the wordmark is the glossy red brush-script
+            "apna baithak" image. Both are unoptimized Next.js Images so they
+            load instantly on the install landing page (no optimization
+            round-trip that would delay first paint). */}
         <header className="mb-6 flex flex-col items-center text-center">
-          <div className="grid h-20 w-20 place-items-center rounded-2xl bg-brand shadow-lg">
-            <span className="text-3xl font-extrabold text-brand-foreground">AB</span>
+          <div className="grid h-20 w-20 place-items-center rounded-2xl shadow-lg overflow-hidden">
+            <BrandIcon size={72} priority />
           </div>
-          <h1 className="mt-3 text-2xl font-extrabold text-foreground">Apna Baithak</h1>
+          <div className="mt-3">
+            <BrandWordmark height={40} priority />
+          </div>
           <p className="mt-1 text-sm text-muted-foreground">
             Your neighbourhood kitchen on Suriyawan Road
           </p>
