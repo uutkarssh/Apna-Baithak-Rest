@@ -477,13 +477,17 @@ section('Plausibility floor boundary cases (MIN_VALID_DISTANCE_KM = 0.05)')
   console.log(`\n  Note: computeDeliveryCharge(11, 300) returns eligible=${c.eligible} because`)
   console.log(`  the function doesn't itself check the 10km ceiling. The checkout route`)
   console.log(`  rejects 11 km separately via isDistanceServiceable().`)
-  // Confirm the route-level rejection works:
-  checkFalse(`isDistanceServiceable(11)`, isDistanceServiceable(11))
-  checkTrue(`isDistanceServiceable(10)`, isDistanceServiceable(10))
+  // Confirm the route-level rejection works. The radius is read from env
+  // (DELIVERY_RADIUS_KM), so we test the actual configured boundary, not
+  // an assumed 10 km.
+  const radiusKm = RESTAURANT.deliveryRadiusKm
+  console.log(`\n  (Production DELIVERY_RADIUS_KM = ${radiusKm} km)`)
+  checkFalse(`isDistanceServiceable(${radiusKm + 1}) (just over the radius)`, isDistanceServiceable(radiusKm + 1))
+  checkTrue(`isDistanceServiceable(${radiusKm}) (at the radius boundary)`, isDistanceServiceable(radiusKm))
   checkTrue(`isDistanceServiceable(0.05)`, isDistanceServiceable(0.05))
-  // NOTE: isDistanceServiceable only checks the upper bound (≤ 10 km). It does
+  // NOTE: isDistanceServiceable only checks the upper bound (≤ radius). It does
   // NOT check the plausibility floor — that's validateDistance()'s job. So a
-  // 0.049 km distance IS "serviceable" (≤ 10 km) but is NOT plausible (< 0.05).
+  // 0.049 km distance IS "serviceable" (≤ radius) but is NOT plausible (< 0.05).
   // The plausibility check happens earlier in the pipeline:
   //   - validateDistance(0.049) → ok:false (BELOW_MIN_VALID)
   //   - computeDeliveryCharge(0.049, ...) → eligible:false (BELOW_MIN_VALID)
@@ -564,8 +568,10 @@ section('Backend: recomputeDistanceFromRestaurant never trusts client distanceKm
 
   // Simulate a legitimately fine lat/lng with a wrong distanceKm in the body.
   // The server should overwrite the client value with the recomputed one.
-  const realLat = 25.290  // ~5.4 km from restaurant
-  const realLng = 82.395
+  // Pick a point ~1.5 km from the restaurant (well inside the 5 km production
+  // radius AND inside the default 10 km radius). 0.0135° lat ≈ 1.5 km.
+  const realLat = RESTAURANT.lat + 0.0135
+  const realLng = RESTAURANT.lng + 0.0135
   const fakeClientDistance = 999 // ← lie
   const serverRecomputed2 = recomputeDistanceFromRestaurant(realLat, realLng)
   const serverValidation2 = validateDistance(serverRecomputed2)
@@ -573,8 +579,73 @@ section('Backend: recomputeDistanceFromRestaurant never trusts client distanceKm
   console.log(`\n  Client sends: lat=${realLat}, lng=${realLng}, distanceKm=${fakeClientDistance}`)
   console.log(`  Server recomputes: ${serverRecomputed2.toFixed(4)}`)
   console.log(`  Server validates: ${JSON.stringify(serverValidation2)}`)
-  checkTrue(`Server accepts the real coords`, serverValidation2.ok)
+  checkTrue(`Server accepts the real coords (within radius)`, serverValidation2.ok)
   checkFalse(`Server's recomputed distance ≠ client's fake value`, serverRecomputed2 === fakeClientDistance)
+}
+
+// ============================================================================
+// SCENARIO 5: PRODUCTION-RADIUS ADAPTIVE TEST
+// (The production deployment has DELIVERY_RADIUS_KM=5, NOT 10. The pure
+// computeDeliveryCharge() function doesn't check the radius ceiling — the
+// checkout route does, via isDistanceServiceable(). This scenario verifies
+// the route-level rejection for out-of-radius addresses under whatever
+// radius is configured.)
+// ============================================================================
+
+section('SCENARIO 5: production-radius adaptive (DELIVERY_RADIUS_KM = ' + RESTAURANT.deliveryRadiusKm + ' km)')
+
+{
+  const radius = RESTAURANT.deliveryRadiusKm
+  const outOfRadius = radius + 0.4  // e.g. 5.4 km when radius=5
+  const inRadius = Math.max(1, radius * 0.6)  // e.g. 3 km when radius=5
+
+  // The AB-2026-0005 customer's actual address was 5.4 km from the restaurant.
+  // With the production 5 km radius, this customer is OUT OF RADIUS and should
+  // be REJECTED at the route level — not charged any fee at all.
+  console.log(`\n  Configured radius: ${radius} km`)
+  console.log(`  Out-of-radius test distance: ${outOfRadius} km`)
+  console.log(`  In-radius test distance:     ${inRadius} km`)
+
+  // Route-level check: out-of-radius must be rejected.
+  checkFalse(`isDistanceServiceable(${outOfRadius}) — route rejects out-of-radius addresses`, isDistanceServiceable(outOfRadius))
+
+  // Pure-function check: computeDeliveryCharge itself does NOT check the
+  // radius ceiling, so it may return eligible=true for an out-of-radius
+  // distance. This is documented in delivery.ts — the route is the final
+  // authority via isDistanceServiceable().
+  const cOutOf = computeDeliveryCharge(outOfRadius, 1000)
+  console.log(`\n  computeDeliveryCharge(${outOfRadius}, 1000):`)
+  console.log(`    eligible    = ${cOutOf.eligible}  (pure function — does NOT check radius ceiling)`)
+  console.log(`    finalCharge = ₹${cOutOf.finalCharge}`)
+  console.log(`    But the checkout route WOULD reject this via isDistanceServiceable().`)
+
+  // In-radius: should be eligible and produce a sensible charge.
+  const cIn = computeDeliveryCharge(inRadius, 1000)
+  console.log(`\n  computeDeliveryCharge(${inRadius}, 1000):`)
+  console.log(`    eligible    = ${cIn.eligible}`)
+  console.log(`    finalCharge = ₹${cIn.finalCharge}`)
+  checkTrue(`computeDeliveryCharge(${inRadius}, 1000) eligible (in-radius)`, cIn.eligible)
+  // Don't assert the exact ₹ value — it depends on the radius (which depends
+  // on env). Just assert it's in the [₹20, ₹70] range.
+  checkTrue(`finalCharge is within [₹20, ₹70] range`, cIn.finalCharge >= 20 && cIn.finalCharge <= 70)
+
+  // For the SPECIFIC production radius of 5 km:
+  //   - 3 km + ₹1000 → raw = 20 + (3-1)*5.5556 = 31.11 → round = 30
+  //   - 4 km + ₹1000 → raw = 20 + (4-1)*5.5556 = 36.67 → round = 35
+  //   - 5 km + ₹1000 → raw = 20 + (5-1)*5.5556 = 42.22 → round = 40
+  if (radius === 5) {
+    console.log(`\n  Production-specific (radius=5 km) fee curve:`)
+    for (const d of [1, 2, 3, 4, 5]) {
+      const c = computeDeliveryCharge(d, 1000)
+      console.log(`    ${d} km → ₹${c.finalCharge}`)
+    }
+    const c3 = computeDeliveryCharge(3, 1000)
+    check(`computeDeliveryCharge(3, 1000).finalCharge (production radius)`, c3.finalCharge, 30)
+    const c4 = computeDeliveryCharge(4, 1000)
+    check(`computeDeliveryCharge(4, 1000).finalCharge (production radius)`, c4.finalCharge, 35)
+    const c5 = computeDeliveryCharge(5, 1000)
+    check(`computeDeliveryCharge(5, 1000).finalCharge (production radius, at boundary)`, c5.finalCharge, 40)
+  }
 }
 
 // ============================================================================
