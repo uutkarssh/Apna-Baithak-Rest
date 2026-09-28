@@ -56,6 +56,21 @@ export const MIN_DISTANCE_KM = 1
 /** Maximum serviceable distance (km). Beyond this, the address is rejected. */
 export const MAX_DISTANCE_KM = 10
 
+/**
+ * Minimum PLAUSIBLE distance (km) from the restaurant.
+ *
+ * Below this threshold, the saved lat/lng are almost certainly the restaurant's
+ * own coordinates (the map pin was never moved from its initial state — see
+ * the AB-2026-0005 incident). We reject such addresses BEFORE the 1km minimum
+ * clamp in rawDeliveryCharge() masks the bug by clamping 0 → 1 → ₹20.
+ *
+ * 0.05 km = 50 m. A real customer address cannot be 50 m from the restaurant's
+ * front door; if it genuinely is, the customer can pick the restaurant's
+ * exact coordinates and the 50 m radius still rejects. That's acceptable —
+ * the alternative (silent ₹20 undercharge) is far worse.
+ */
+export const MIN_VALID_DISTANCE_KM = 0.05
+
 // === Step 1 thresholds ===
 
 /** Minimum order subtotal for delivery (₹). Below this, delivery is blocked. */
@@ -117,6 +132,54 @@ export function isDistanceServiceable(distanceKm: number): boolean {
 }
 
 /**
+ * Whether the given distance is PLAUSIBLE — i.e. greater than MIN_VALID_DISTANCE_KM.
+ *
+ * This is the "is the pin still on the restaurant?" sanity check. A distance
+ * of 0 (or anything below 50 m) means the customer never moved the pin off
+ * the restaurant's coordinates, so we cannot trust the saved location.
+ */
+export function isPlausibleDistance(distanceKm: number): boolean {
+  return distanceKm >= MIN_VALID_DISTANCE_KM
+}
+
+/**
+ * Validate a distance against both the minimum-plausibility floor and the
+ * service-radius ceiling. Used by the address save, address update, and
+ * checkout routes to reject bad lat/lng before they reach the fee formula.
+ *
+ * Returns `{ ok: true, distanceKm }` if the distance is acceptable, or
+ * `{ ok: false, reason, message }` describing why it was rejected.
+ */
+export type DistanceValidationResult =
+  | { ok: true; distanceKm: number }
+  | {
+      ok: false
+      reason: 'BELOW_MIN_VALID' | 'OUTSIDE_SERVICE_RADIUS'
+      message: string
+    }
+
+export function validateDistance(distanceKm: number): DistanceValidationResult {
+  // Plausibility floor — must run BEFORE the 1km clamp in rawDeliveryCharge
+  // would mask a 0 / near-0 distance.
+  if (!isPlausibleDistance(distanceKm)) {
+    return {
+      ok: false,
+      reason: 'BELOW_MIN_VALID',
+      message: `Saved location appears to be at the restaurant (distance ${distanceKm.toFixed(4)} km). Please re-pick your delivery location on the map.`,
+    }
+  }
+  // Service-radius ceiling.
+  if (!isDistanceServiceable(distanceKm)) {
+    return {
+      ok: false,
+      reason: 'OUTSIDE_SERVICE_RADIUS',
+      message: `Sorry, we only deliver within ${RESTAURANT.deliveryRadiusKm} km of the restaurant. Your address is ${distanceKm.toFixed(2)} km away.`,
+    }
+  }
+  return { ok: true, distanceKm }
+}
+
+/**
  * Order eligibility result — the outcome of Step 1.
  *
  * - `eligible: true` → proceed to Step 2 (charge calculation)
@@ -127,10 +190,14 @@ export type EligibilityResult =
   | {
       eligible: false
       /** Machine-readable reason code for analytics / debugging. */
-      reason: 'BELOW_MIN_SUBTOTAL' | 'BELOW_FAR_MIN_SUBTOTAL' | 'OUTSIDE_SERVICE_RADIUS'
+      reason:
+        | 'BELOW_MIN_SUBTOTAL'
+        | 'BELOW_FAR_MIN_SUBTOTAL'
+        | 'OUTSIDE_SERVICE_RADIUS'
+        | 'BELOW_MIN_VALID'
       /** Human-readable message to show the customer. */
       message: string
-      /** Amount the customer needs to add to become eligible (₹). 0 if outside radius. */
+      /** Amount the customer needs to add to become eligible (₹). 0 if outside radius or below-min-valid. */
       remaining: number
     }
 
@@ -139,18 +206,42 @@ export type EligibilityResult =
  *
  * Returns an EligibilityResult. If not eligible, the `message` field contains
  * the exact string to show the customer, and `remaining` is how much more they
- * need to add to their cart to become eligible (0 if outside the service radius).
+ * need to add to their cart to become eligible (0 if outside the service radius
+ * or below the plausibility floor).
  *
- * NOTE: This does NOT check the 10km service radius — that's enforced separately
- * at address-selection time via isDistanceServiceable(). If a non-serviceable
- * address somehow reaches here, it will be caught by the far-minimum check
- * (distance > 7 AND subtotal < 800), but the correct rejection point is
- * upstream. The checkout route also calls isDistanceServiceable() defensively.
+ * Order of checks (the FIRST one that fails wins — the customer sees exactly
+ * one message):
+ *
+ *   Step 0:  Plausibility floor — distance < 0.05 km (pin never moved off the
+ *           restaurant). Rejects BEFORE the 1km clamp in rawDeliveryCharge
+ *           would mask it.
+ *
+ *   Step 1a: Far-distance minimum (distance > 7km → ₹800 min).
+ *   Step 1b: Universal minimum (0-7km → ₹200 min).
+ *
+ * NOTE: This function does NOT itself check the 10km service-radius ceiling
+ * (use isDistanceServiceable() / validateDistance() for that). It only checks
+ * the plausibility floor, because that is logically the very first thing that
+ * should fail on a saved-at-restaurant address.
  */
 export function checkOrderEligibility(
   distanceKm: number,
   subtotal: number
 ): EligibilityResult {
+  // === Step 0: Plausibility floor ===
+  // A distance of 0 (or anything below 50 m) means the pin was never moved off
+  // the restaurant's coordinates. The 1km clamp in rawDeliveryCharge would
+  // otherwise turn this into ₹20 and silently undercharge the customer. We
+  // reject here so the customer is forced to re-pick their location.
+  if (distanceKm < MIN_VALID_DISTANCE_KM) {
+    return {
+      eligible: false,
+      reason: 'BELOW_MIN_VALID',
+      message: `Saved location appears to be at the restaurant (distance ${distanceKm.toFixed(4)} km). Please re-pick your delivery location on the map.`,
+      remaining: 0,
+    }
+  }
+
   // === DISTANCE-FIRST eligibility (fixes wrong-message-priority bug) ===
   // A customer beyond 7km must NEVER see the ₹200 message — from their very
   // first item in the cart, they should see the ₹800 message directly.
@@ -207,7 +298,12 @@ export function computeDeliveryCharge(
   subtotal: number
 ): {
   eligible: boolean
-  reason: 'BELOW_MIN_SUBTOTAL' | 'BELOW_FAR_MIN_SUBTOTAL' | 'OUTSIDE_SERVICE_RADIUS' | null
+  reason:
+    | 'BELOW_MIN_SUBTOTAL'
+    | 'BELOW_FAR_MIN_SUBTOTAL'
+    | 'OUTSIDE_SERVICE_RADIUS'
+    | 'BELOW_MIN_VALID'
+    | null
   message: string | null
   remaining: number
   distanceKm: number
@@ -216,6 +312,24 @@ export function computeDeliveryCharge(
   isFree: boolean
   finalCharge: number
 } {
+  // Step 0: Plausibility floor (distance < 0.05 km → reject).
+  // This runs BEFORE the 1km clamp in rawDeliveryCharge, which would otherwise
+  // turn a 0 km distance into a ₹20 charge. We need the customer to be forced
+  // back to the map screen to re-pick their location.
+  if (distanceKm < MIN_VALID_DISTANCE_KM) {
+    return {
+      eligible: false,
+      reason: 'BELOW_MIN_VALID',
+      message: `Saved location appears to be at the restaurant (distance ${distanceKm.toFixed(4)} km). Please re-pick your delivery location on the map.`,
+      remaining: 0,
+      distanceKm,
+      rawCharge: 0,
+      charge: 0,
+      isFree: false,
+      finalCharge: 0,
+    }
+  }
+
   // Step 1: eligibility
   const eligibility = checkOrderEligibility(distanceKm, subtotal)
   if (!eligibility.eligible) {

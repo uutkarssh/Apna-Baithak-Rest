@@ -24,6 +24,10 @@ import {
   Trash2,
   Star,
   X,
+  RefreshCw,
+  Lock,
+  ShieldAlert,
+  WifiOff,
 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useApp } from '@/store/app'
@@ -32,6 +36,7 @@ import { RESTAURANT } from '@/lib/constants'
 import {
   distanceFromRestaurant,
   isWithinDeliveryRadius,
+  isPlausibleCustomerLocation,
   reverseGeocode,
   geocode,
 } from '@/lib/geo'
@@ -51,6 +56,71 @@ const restaurantIcon = L.divIcon({
   iconSize: [30, 36],
   iconAnchor: [0, 0],
 })
+
+// ============================================================================
+// STATE MACHINE
+// ============================================================================
+//
+// The map screen has a strict state machine that refuses to let the customer
+// save an address until we have a real GPS fix. The previous version silently
+// fell back to the restaurant's coordinates when geolocation failed — that was
+// the root cause of the AB-2026-0005 incident (a ₹20 charge for a 5.4 km
+// order). This version does NOT have a fallback path; every blocking state
+// forces the user to take an action.
+//
+// States:
+//
+//   checking       — initial. We're querying navigator.permissions to find
+//                    out whether geolocation is granted/prompt/denied.
+//
+//   unsupported    — navigator.geolocation doesn't exist (very old browser).
+//                    Full-screen block; no recovery.
+//
+//   insecure       — page is served over HTTP (not HTTPS) and geolocation
+//                    is therefore disabled by the browser. Full-screen
+//                    block; the only recovery is "use HTTPS".
+//
+//   denied         — user has previously denied geolocation permission.
+//                    Full-screen block with Chrome-Android + PWA unblock
+//                    steps; "I've enabled it, try again" button.
+//                    Listens for permission.onchange; auto-resumes to
+//                    "locating" when the user flips it back to granted.
+//
+//   locating       — permission is granted; we're calling getCurrentPosition.
+//                    Spinner UI.
+//
+//   fix_failed     — getCurrentPosition's error callback fired (timeout,
+//                    position unavailable). Show retry button. Does NOT
+//                    fall back to anything — the customer must retry and
+//                    get a real fix.
+//
+//   low_accuracy   — fix succeeded but coords.accuracy > 500 m. Show
+//                    "Your GPS fix was inaccurate — try again or adjust
+//                    the pin" UI. The pin is now draggable, but the user
+//                    is encouraged to retry for a better fix.
+//
+//   located        — fix succeeded with accuracy <= 500 m. Pin is placed
+//                    at the GPS fix and is now draggable. Search box is
+//                    enabled. Customer can edit/save the address.
+//
+// The "Confirm & Proceed" button is gated on state === 'located' (or
+// 'low_accuracy' once the user has moved the pin from the initial fix).
+
+type GpsState =
+  | { kind: 'checking' }
+  | { kind: 'unsupported' }
+  | { kind: 'insecure' }
+  | { kind: 'denied' }
+  | { kind: 'locating' }
+  | { kind: 'fix_failed'; message: string }
+  | { kind: 'low_accuracy'; accuracy: number }
+  | { kind: 'located'; accuracy: number }
+
+// Maximum acceptable GPS inaccuracy (meters). Coarser fixes must be retried
+// or manually adjusted by the customer. 500 m is roughly half a city block —
+// tight enough that the delivery charge will be accurate, loose enough to
+// not frustrate users on devices with weak GPS.
+const MAX_ACCURACY_M = 500
 
 function DraggablePin({ position, onMove }: { position: [number, number]; onMove: (p: [number, number]) => void }) {
   return (
@@ -102,13 +172,19 @@ export function LocationView() {
   const { profile, loading: authLoading } = useAuth()
   const qc = useQueryClient()
 
-  const [pin, setPin] = useState<[number, number]>([RESTAURANT.lat, RESTAURANT.lng])
+  // === GPS STATE MACHINE ===
+  // Pin starts as null — there is NO default restaurant-coordinate fallback.
+  // The pin is only placed once a real GPS fix is obtained.
+  const [gps, setGps] = useState<GpsState>({ kind: 'checking' })
+  const [pin, setPin] = useState<[number, number] | null>(null)
+  // Tracks whether the user has manually moved the pin after the initial fix.
+  // Used by low_accuracy state to allow the "Confirm" button if the user
+  // drags the pin to a sensible place even with a poor fix.
+  const [pinMoved, setPinMoved] = useState(false)
   const [reverseLabel, setReverseLabel] = useState('')
   const [reverseLoading, setReverseLoading] = useState(false)
-  const [locating, setLocating] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<{ lat: number; lon: number; label: string }[]>([])
-  const [autoLocated, setAutoLocated] = useState(false)
 
   const [houseFlat, setHouseFlat] = useState('')
   const [streetArea, setStreetArea] = useState('')
@@ -118,55 +194,119 @@ export function LocationView() {
   const [label, setLabel] = useState<'Home' | 'Work' | 'Other'>('Home')
   const [saving, setSaving] = useState(false)
 
-  // Live distance between the current pin and the restaurant — updates on
-  // every drag (see DraggablePin drag handler).
-  const distKm = distanceFromRestaurant(pin[0], pin[1])
-  const withinRadius = isWithinDeliveryRadius(pin[0], pin[1])
+  // Live distance — only computed when pin is set.
+  const distKm = pin ? distanceFromRestaurant(pin[0], pin[1]) : null
+  const withinRadius = pin ? isWithinDeliveryRadius(pin[0], pin[1]) : false
+  const plausible = pin ? isPlausibleCustomerLocation(pin[0], pin[1]) : false
 
-  const useCurrentLocation = useCallback(() => {
-    if (!navigator.geolocation) {
-      toast.error('Location not supported on this device')
+  // ===== GPS fix helper =====
+  // Used both on mount (after permission resolves to 'granted') and on retry
+  // button presses. Updates the state machine based on the outcome — there
+  // is NO silent fallback path.
+  const fetchGpsFix = useCallback(() => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setGps({ kind: 'unsupported' })
       return
     }
-    setLocating(true)
+    setGps({ kind: 'locating' })
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        const acc = pos.coords.accuracy ?? Number.MAX_SAFE_INTEGER
         setPin([pos.coords.latitude, pos.coords.longitude])
-        setLocating(false)
-        toast.success('Moved pin to your current location')
+        setPinMoved(false)
+        if (acc > MAX_ACCURACY_M) {
+          setGps({ kind: 'low_accuracy', accuracy: acc })
+        } else {
+          setGps({ kind: 'located', accuracy: acc })
+        }
       },
       (err) => {
-        setLocating(false)
-        toast.error('Could not get your location: ' + err.message)
+        // err.code: 1 = PERMISSION_DENIED, 2 = POSITION_UNAVAILABLE, 3 = TIMEOUT
+        // We do NOT silently fall back to the restaurant. The user must retry.
+        if (err.code === err.PERMISSION_DENIED) {
+          // The user denied the prompt just now. Treat same as 'denied' so
+          // they see the full-screen unblock instructions.
+          setGps({ kind: 'denied' })
+        } else {
+          setGps({
+            kind: 'fix_failed',
+            message: err.message || 'Could not get your location. Please try again.',
+          })
+        }
       },
-      { enableHighAccuracy: true, timeout: 8000 }
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     )
   }, [])
 
-  // ===== AUTO-LOCATE ON MOUNT =====
-  // As soon as the map screen opens, automatically fetch and center on the
-  // user's current precise location. The user does NOT have to tap
-  // "Use Current Location" first — that button stays available only for
-  // re-centering if the pin has been moved.
+  // ===== PERMISSION CHECK ON MOUNT =====
+  // Use the Permissions API to discover the current geolocation permission
+  // state without triggering a prompt. Then act accordingly.
   useEffect(() => {
-    if (autoLocated) return
-    if (typeof navigator === 'undefined' || !navigator.geolocation) return
-    setAutoLocated(true)
-    setLocating(true)
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setPin([pos.coords.latitude, pos.coords.longitude])
-        setLocating(false)
-      },
-      () => {
-        // Silent fail — user can manually tap the crosshair button later.
-        setLocating(false)
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
-    )
-  }, [autoLocated])
+    if (typeof window === 'undefined') return
+    // Insecure context (HTTP, not localhost) — geolocation is disabled by
+    // the browser. Show the insecure-context block.
+    const isSecure =
+      typeof window.isSecureContext === 'boolean'
+        ? window.isSecureContext
+        : window.location.protocol === 'https:' || window.location.hostname === 'localhost'
+    if (!isSecure) {
+      setGps({ kind: 'insecure' })
+      return
+    }
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setGps({ kind: 'unsupported' })
+      return
+    }
+    // Permissions API may be missing on some browsers (notably older iOS Safari).
+    // In that case, we fall through to triggering the prompt via getCurrentPosition.
+    if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
+      // No Permissions API — trigger the prompt directly.
+      fetchGpsFix()
+      return
+    }
+    let permStatus: PermissionStatus | null = null
+    let cancelled = false
+    navigator.permissions
+      .query({ name: 'geolocation' as PermissionName })
+      .then((status) => {
+        if (cancelled) return
+        permStatus = status
+        const apply = () => {
+          if (status.state === 'granted') {
+            fetchGpsFix()
+          } else if (status.state === 'denied') {
+            setGps({ kind: 'denied' })
+          } else {
+            // 'prompt' — trigger the browser geolocation prompt. The
+            // resulting success/error callback advances the state machine.
+            fetchGpsFix()
+          }
+        }
+        apply()
+        // Listen for permission changes — e.g. the customer flips it back
+        // to 'granted' after seeing our full-screen blocked UI.
+        status.onchange = () => {
+          if (status.state === 'granted') {
+            fetchGpsFix()
+          } else if (status.state === 'denied') {
+            setGps({ kind: 'denied' })
+          }
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        // Permissions query failed (rare). Fall through to direct prompt.
+        fetchGpsFix()
+      })
+    return () => {
+      cancelled = true
+      if (permStatus) permStatus.onchange = null
+    }
+  }, [fetchGpsFix])
 
+  // ===== Reverse geocode whenever pin moves (only after fix obtained) =====
   useEffect(() => {
+    if (!pin) return
     let active = true
     setReverseLoading(true)
     const t = setTimeout(async () => {
@@ -188,7 +328,13 @@ export function LocationView() {
       active = false
       clearTimeout(t)
     }
-  }, [pin[0], pin[1]])
+  }, [pin ? pin[0] : null, pin ? pin[1] : null])
+
+  // ===== Pin move handler — also flags pinMoved for the low-accuracy path =====
+  const onPinMove = useCallback((p: [number, number]) => {
+    setPin(p)
+    setPinMoved(true)
+  }, [])
 
   async function runSearch(q: string) {
     if (!q.trim()) {
@@ -199,12 +345,12 @@ export function LocationView() {
     setSearchResults(results)
   }
 
+  // ===== "Confirm & Proceed" save handler =====
+  // Gated on the GPS fix being obtained. We DO NOT save if pin is null,
+  // if pin is at the restaurant, or if pin is outside the radius.
   async function saveAddress() {
-    // Gate on auth state — don't bounce while session is still loading.
     if (authLoading) return
     if (!profile) {
-      // Remember location view as the return destination so after login
-      // the user lands back here to continue saving the address.
       goToLogin('location')
       return
     }
@@ -212,8 +358,16 @@ export function LocationView() {
       toast.error('Please fill all address fields (house/flat, street, city, pincode)')
       return
     }
+    if (!pin) {
+      toast.error('Please wait for your GPS location to be set first.')
+      return
+    }
+    if (!plausible) {
+      toast.error('Your pin appears to be at the restaurant. Please move it to your delivery location.')
+      return
+    }
     if (!withinRadius) {
-      toast.error(`This location is ${distKm.toFixed(2)} km away — outside our ${RESTAURANT.deliveryRadiusKm} km delivery range.`)
+      toast.error(`This location is ${distKm!.toFixed(2)} km away — outside our ${RESTAURANT.deliveryRadiusKm} km delivery range.`)
       return
     }
     setSaving(true)
@@ -230,7 +384,9 @@ export function LocationView() {
           pincode,
           latitude: pin[0],
           longitude: pin[1],
-          distanceKm: Number(distKm.toFixed(2)),
+          // NOTE: we DO NOT send distanceKm — the backend recomputes it
+          // server-side. Sending it would be misleading; the backend ignores
+          // it anyway as of the incident fix.
           isDefault: true,
         }),
       })
@@ -240,9 +396,6 @@ export function LocationView() {
       }
       const { address } = await res.json()
       setSelectedAddressId(address.id)
-      // Invalidate the shared ['addresses'] cache so any screen that
-      // queries saved addresses (cart, checkout, top-bar, profile)
-      // immediately re-fetches and shows the new address.
       qc.invalidateQueries({ queryKey: ['addresses'] })
       toast.success('Address saved')
       setView('cart')
@@ -253,6 +406,39 @@ export function LocationView() {
     }
   }
 
+  // ============================================================================
+  // RENDER HELPERS — each GPS state has its own UI
+  // ============================================================================
+
+  // The full-screen blocking UI is shown for 'checking', 'unsupported',
+  // 'insecure', 'denied', 'locating', and 'fix_failed'. Only when we
+  // have a real fix (or low-accuracy fix) do we show the full map UI.
+  const showFullMap = pin != null && (gps.kind === 'located' || gps.kind === 'low_accuracy')
+  const canSave =
+    pin != null &&
+    plausible &&
+    withinRadius &&
+    (gps.kind === 'located' || (gps.kind === 'low_accuracy' && pinMoved))
+
+  // ===== Full-screen blocked UI (denied / unsupported / insecure) =====
+  if (gps.kind === 'denied' || gps.kind === 'unsupported' || gps.kind === 'insecure') {
+    return <LocationPermissionBlock kind={gps.kind} onRetry={fetchGpsFix} onBack={back} />
+  }
+
+  // ===== Full-screen loading / retry UI (checking / locating / fix_failed) =====
+  if (gps.kind === 'checking' || gps.kind === 'locating' || gps.kind === 'fix_failed') {
+    return (
+      <LocationAcquiringScreen
+        kind={gps.kind}
+        message={gps.kind === 'fix_failed' ? gps.message : undefined}
+        onRetry={fetchGpsFix}
+        onBack={back}
+      />
+    )
+  }
+
+  // ===== Map + form UI (located OR low_accuracy) =====
+  // (low_accuracy shows an extra retry banner above the map.)
   return (
     <div className="flex min-h-full flex-col">
       <header className="sticky top-0 z-[500] bg-background/95 px-4 py-3 backdrop-blur">
@@ -262,6 +448,9 @@ export function LocationView() {
           </button>
           <h1 className="text-xl font-bold text-foreground">Select Your Location</h1>
         </div>
+        {/* Search is only enabled once we have a GPS fix. The user can refine
+            the pin by searching for an area, but they cannot use search as a
+            way to bypass the GPS requirement. */}
         <div className="flex items-center gap-2 rounded-full border border-brand/20 bg-white px-4 py-2.5 shadow-sm">
           <Search className="h-4 w-4 text-brand" />
           <input
@@ -281,6 +470,7 @@ export function LocationView() {
                 key={i}
                 onClick={() => {
                   setPin([r.lat, r.lon])
+                  setPinMoved(true)
                   setSearchResults([])
                   setSearchQuery(r.label)
                 }}
@@ -294,50 +484,85 @@ export function LocationView() {
         )}
       </header>
 
+      {/* Low-accuracy banner — shows above the map when the fix was poor.
+          The pin is already placed (we still trust the GPS coords, just
+          loosely), but the user is encouraged to retry or manually adjust. */}
+      {gps.kind === 'low_accuracy' && (
+        <div className="flex items-start gap-2 bg-amber-50 px-4 py-3 text-amber-900">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+          <div className="flex-1 text-xs leading-relaxed">
+            <p className="font-bold">GPS fix was inaccurate (~{Math.round(gps.accuracy)} m)</p>
+            <p className="mt-0.5">
+              The pin has been placed at your approximate location. Please drag it to your exact
+              delivery spot, or retry for a more accurate fix.
+            </p>
+            <button
+              onClick={fetchGpsFix}
+              className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-600 px-3 py-1.5 text-[11px] font-bold text-white shadow-sm"
+            >
+              <RefreshCw className="h-3 w-3" /> Retry GPS
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* MAP — fills its allotted height; the pin is always draggable. */}
       <div className="relative z-0 h-[42vh] min-h-[260px] w-full">
-        <MapContainer
-          center={pin}
-          zoom={15}
-          scrollWheelZoom={false}
-          className="h-full w-full"
-          zoomControl={false}
-        >
-          <TileLayer
-            attribution='&copy; OpenStreetMap contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
-          <Marker position={[RESTAURANT.lat, RESTAURANT.lng]} icon={restaurantIcon} />
-          <DraggablePin position={pin} onMove={setPin} />
-          <ClickToMove onMove={setPin} />
-          <Recenter center={pin} />
-        </MapContainer>
+        {showFullMap && pin ? (
+          <MapContainer
+            center={pin}
+            zoom={15}
+            scrollWheelZoom={false}
+            className="h-full w-full"
+            zoomControl={false}
+          >
+            <TileLayer
+              attribution='&copy; OpenStreetMap contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            <Marker position={[RESTAURANT.lat, RESTAURANT.lng]} icon={restaurantIcon} />
+            <DraggablePin position={pin} onMove={onPinMove} />
+            <ClickToMove onMove={onPinMove} />
+            <Recenter center={pin} />
+          </MapContainer>
+        ) : (
+          <div className="grid h-full place-items-center bg-muted text-sm text-muted-foreground">
+            <Loader2 className="h-6 w-6 animate-spin" />
+          </div>
+        )}
 
-        {/* Re-center button — top-right floating; for re-centering only. */}
+        {/* Re-center button — re-runs the GPS fetch. While the fetch is in
+            flight, gps.kind flips to 'locating' and the whole component
+            switches to the full-screen LocationAcquiringScreen (handled by
+            the early-return above). So in this map UI we only see
+            'located' or 'low_accuracy' — the button is always enabled here.
+            Tapping it briefly flips the screen to the acquiring UI. */}
         <button
-          onClick={useCurrentLocation}
+          onClick={fetchGpsFix}
           className="absolute right-3 top-3 z-[600] grid h-11 w-11 place-items-center rounded-full bg-white shadow-md"
-          aria-label="Use current location"
+          aria-label="Re-acquire GPS"
         >
-          {locating ? <Loader2 className="h-5 w-5 animate-spin text-brand" /> : <Crosshair className="h-5 w-5 text-brand" />}
+          <Crosshair className="h-5 w-5 text-brand" />
         </button>
 
         {/* LIVE distance badge — bottom of the map, updates as the pin moves. */}
-        <div className="pointer-events-none absolute inset-x-3 bottom-3 z-[600] flex items-center justify-between gap-2 rounded-xl bg-white/95 px-3 py-2 shadow-md backdrop-blur">
-          <span className="flex items-center gap-2 text-xs font-semibold">
-            <Navigation className="h-4 w-4 text-brand" />
-            {distKm.toFixed(2)} km from restaurant
-          </span>
-          {withinRadius ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
-              <CheckCircle2 className="h-3 w-3" /> Within {RESTAURANT.deliveryRadiusKm} km
+        {pin && (
+          <div className="pointer-events-none absolute inset-x-3 bottom-3 z-[600] flex items-center justify-between gap-2 rounded-xl bg-white/95 px-3 py-2 shadow-md backdrop-blur">
+            <span className="flex items-center gap-2 text-xs font-semibold">
+              <Navigation className="h-4 w-4 text-brand" />
+              {distKm!.toFixed(2)} km from restaurant
             </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700">
-              <AlertTriangle className="h-3 w-3" /> Outside delivery area
-            </span>
-          )}
-        </div>
+            {withinRadius ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
+                <CheckCircle2 className="h-3 w-3" /> Within {RESTAURANT.deliveryRadiusKm} km
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700">
+                <AlertTriangle className="h-3 w-3" /> Outside delivery area
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* CONTENT BELOW THE MAP — saved addresses, action buttons, address form. */}
@@ -353,12 +578,11 @@ export function LocationView() {
         {/* ACTION BUTTONS — properly aligned, equal-width, evenly spaced. */}
         <div className="grid grid-cols-2 gap-3">
           <button
-            onClick={useCurrentLocation}
-            disabled={locating}
-            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-bold text-brand-foreground shadow-sm transition active:scale-[0.99] disabled:opacity-50"
+            onClick={fetchGpsFix}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-bold text-brand-foreground shadow-sm transition active:scale-[0.99]"
           >
-            {locating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Crosshair className="h-4 w-4" />}
-            <span className="truncate">Use Current Location</span>
+            <Crosshair className="h-4 w-4" />
+            <span className="truncate">Re-acquire GPS</span>
           </button>
           <button
             onClick={() => {
@@ -367,7 +591,6 @@ export function LocationView() {
               setLandmark('')
               setCity('')
               setPincode('')
-              // scroll the form into view
               setTimeout(() => {
                 document.getElementById('address-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
               }, 50)
@@ -421,20 +644,177 @@ export function LocationView() {
             <Field label="City" value={city} onChange={setCity} placeholder="e.g. Bankat Khas" required />
             <Field label="PIN Code" value={pincode} onChange={(v) => setPincode(v.replace(/[^0-9]/g, '').slice(0, 6))} placeholder="221308" required inputMode="numeric" />
           </div>
-          {!withinRadius && (
+          {!withinRadius && pin && (
             <p className="rounded-lg bg-red-50 p-2 text-xs font-medium text-red-700">
-              This location is {distKm.toFixed(2)} km away — outside our {RESTAURANT.deliveryRadiusKm} km delivery range. Move the pin closer to proceed.
+              This location is {distKm!.toFixed(2)} km away — outside our {RESTAURANT.deliveryRadiusKm} km delivery range. Move the pin closer to proceed.
             </p>
           )}
           <button
             type="submit"
-            disabled={saving || !withinRadius}
+            disabled={saving || !canSave}
             className="mt-1 w-full rounded-xl bg-brand py-3 text-sm font-bold text-brand-foreground shadow-md transition active:scale-[0.99] disabled:opacity-50"
           >
-            {saving ? 'Saving…' : 'Confirm & Proceed'}
+            {saving ? 'Saving…' : gps.kind === 'low_accuracy' && !pinMoved ? 'Adjust pin to confirm' : 'Confirm & Proceed'}
           </button>
         </form>
         <div className="h-4" />
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// FULL-SCREEN PERMISSION BLOCK
+// ============================================================================
+
+function LocationPermissionBlock({
+  kind,
+  onRetry,
+  onBack,
+}: {
+  kind: 'denied' | 'unsupported' | 'insecure'
+  onRetry: () => void
+  onBack: () => void
+}) {
+  return (
+    <div className="flex min-h-full flex-col">
+      <header className="sticky top-0 z-[500] bg-background/95 px-4 py-3 backdrop-blur">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="grid h-9 w-9 place-items-center rounded-full bg-muted">
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+          <h1 className="text-xl font-bold text-foreground">Location Required</h1>
+        </div>
+      </header>
+
+      <div className="flex flex-1 flex-col items-center justify-center gap-6 px-6 py-12 text-center">
+        <div className="grid h-24 w-24 place-items-center rounded-full bg-red-100">
+          {kind === 'insecure' ? (
+            <WifiOff className="h-10 w-10 text-red-600" />
+          ) : kind === 'unsupported' ? (
+            <ShieldAlert className="h-10 w-10 text-red-600" />
+          ) : (
+            <Lock className="h-10 w-10 text-red-600" />
+          )}
+        </div>
+
+        <div className="max-w-md space-y-2">
+          <h2 className="text-lg font-bold text-foreground">
+            {kind === 'denied'
+              ? 'Location access is required to place an order'
+              : kind === 'insecure'
+              ? 'This page must be served over HTTPS to use location'
+              : 'Location is not supported on this device'}
+          </h2>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            {kind === 'denied'
+              ? "We need your real GPS location to place your pin at the right spot and compute the correct delivery fee. We don't store your live location after the address is saved."
+              : kind === 'insecure'
+              ? "Browsers disable geolocation on non-HTTPS pages. Please open this site via the secure https:// link (or run on localhost during development)."
+              : "Your browser does not support the Geolocation API. Please use a recent version of Chrome, Firefox, Safari, or Edge."}
+          </p>
+        </div>
+
+        {kind === 'denied' && (
+          <div className="max-w-md space-y-4 rounded-2xl border border-border bg-card p-4 text-left text-sm shadow-sm">
+            <div>
+              <p className="mb-1 font-bold text-foreground">Chrome on Android</p>
+              <ol className="list-decimal space-y-1 pl-5 text-xs leading-relaxed text-muted-foreground">
+                <li>Tap the <span className="font-semibold">lock icon</span> in the address bar (left of the URL).</li>
+                <li>Tap <span className="font-semibold">Permissions</span> → <span className="font-semibold">Location</span>.</li>
+                <li>Select <span className="font-semibold">Allow</span>.</li>
+                <li>Tap <span className="font-semibold">"I've enabled it, try again"</span> below.</li>
+              </ol>
+            </div>
+            <div>
+              <p className="mb-1 font-bold text-foreground">Installed PWA (Add to Home Screen)</p>
+              <ol className="list-decimal space-y-1 pl-5 text-xs leading-relaxed text-muted-foreground">
+                <li>Long-press the app icon on your home screen.</li>
+                <li>Tap <span className="font-semibold">App info</span> → <span className="font-semibold">Permissions</span>.</li>
+                <li>Tap <span className="font-semibold">Location</span> → <span className="font-semibold">Allow only while using the app</span>.</li>
+                <li>Re-open the app and tap <span className="font-semibold">"I've enabled it, try again"</span> below.</li>
+              </ol>
+            </div>
+          </div>
+        )}
+
+        {kind === 'denied' && (
+          <button
+            onClick={onRetry}
+            className="inline-flex items-center gap-2 rounded-xl bg-brand px-6 py-3 text-sm font-bold text-brand-foreground shadow-md active:scale-[0.99]"
+          >
+            <RefreshCw className="h-4 w-4" />
+            I've enabled it, try again
+          </button>
+        )}
+
+        {kind === 'insecure' && (
+          <p className="max-w-md text-xs leading-relaxed text-muted-foreground">
+            If you reached this page via an http:// link, please ask the site owner to enable HTTPS. Geolocation is
+            blocked by the browser on insecure origins for your safety.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ============================================================================
+// FULL-SCREEN "ACQUIRING GPS" / RETRY SCREEN
+// ============================================================================
+
+function LocationAcquiringScreen({
+  kind,
+  message,
+  onRetry,
+  onBack,
+}: {
+  kind: 'checking' | 'locating' | 'fix_failed'
+  message?: string
+  onRetry: () => void
+  onBack: () => void
+}) {
+  const title =
+    kind === 'checking' ? 'Checking location permission…' :
+    kind === 'locating' ? 'Getting your GPS location…' :
+    'Could not get your location'
+  const body =
+    kind === 'checking' ? 'Please wait a moment while we check whether location access is enabled.' :
+    kind === 'locating' ? 'We are acquiring a real GPS fix to place your pin at the right spot. Please keep your device still.' :
+    (message || 'Your GPS could not be reached in time. Please retry — we will not proceed without a real fix.')
+  const showRetry = kind === 'fix_failed'
+  return (
+    <div className="flex min-h-full flex-col">
+      <header className="sticky top-0 z-[500] bg-background/95 px-4 py-3 backdrop-blur">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="grid h-9 w-9 place-items-center rounded-full bg-muted">
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+          <h1 className="text-xl font-bold text-foreground">Select Your Location</h1>
+        </div>
+      </header>
+
+      <div className="flex flex-1 flex-col items-center justify-center gap-6 px-6 py-12 text-center">
+        <div className="grid h-24 w-24 place-items-center rounded-full bg-brand-softer">
+          {showRetry ? (
+            <AlertTriangle className="h-10 w-10 text-amber-600" />
+          ) : (
+            <Loader2 className="h-10 w-10 animate-spin text-brand" />
+          )}
+        </div>
+        <div className="max-w-md space-y-2">
+          <h2 className="text-lg font-bold text-foreground">{title}</h2>
+          <p className="text-sm leading-relaxed text-muted-foreground">{body}</p>
+        </div>
+        {showRetry && (
+          <button
+            onClick={onRetry}
+            className="inline-flex items-center gap-2 rounded-xl bg-brand px-6 py-3 text-sm font-bold text-brand-foreground shadow-md active:scale-[0.99]"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Retry GPS
+          </button>
+        )}
       </div>
     </div>
   )
@@ -543,12 +923,20 @@ function SavedAddresses({ selectedId, onSelect }: { selectedId: string | null; o
         {addresses.map((a) => {
           const isSelected = selectedId === a.id
           const isEditing = editingId === a.id
+          // Detect bad saved addresses (created before the GPS-required fix):
+          //   - lat/lng exactly match the restaurant's
+          //   - distanceKm is below the plausibility floor (0.05 km)
+          //   - distanceKm is null (older schema migrations may have left it NULL)
+          const isBadAddress =
+            (a.latitude === RESTAURANT.lat && a.longitude === RESTAURANT.lng) ||
+            (a.distanceKm != null && a.distanceKm < 0.05) ||
+            a.distanceKm == null
           return (
             <div
               key={a.id}
               className={`rounded-xl border p-3 transition ${
                 isSelected ? 'border-brand bg-brand-softer' : 'border-border bg-card'
-              }`}
+              } ${isBadAddress ? 'ring-2 ring-red-300' : ''}`}
             >
               <button
                 onClick={() => !isEditing && onSelect(a.id)}
@@ -569,9 +957,18 @@ function SavedAddresses({ selectedId, onSelect }: { selectedId: string | null; o
                   <span className="mt-0.5 block text-xs text-muted-foreground">
                     {a.houseFlat}, {a.streetArea}, {a.city} - {a.pincode}
                   </span>
-                  {a.distanceKm != null && (
+                  {a.distanceKm != null ? (
                     <span className="mt-0.5 block text-[11px] text-muted-foreground">
                       {a.distanceKm.toFixed(2)} km from restaurant
+                    </span>
+                  ) : (
+                    <span className="mt-0.5 block text-[11px] font-bold text-red-600">
+                      No distance recorded — please re-pick this address
+                    </span>
+                  )}
+                  {isBadAddress && (
+                    <span className="mt-0.5 block text-[11px] font-bold text-red-600">
+                      ⚠ Saved location is invalid. Please tap to re-pick.
                     </span>
                   )}
                 </span>

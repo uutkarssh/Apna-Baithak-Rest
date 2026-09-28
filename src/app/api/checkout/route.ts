@@ -96,20 +96,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Address not found.' }, { status: 404 })
   }
 
-  // Delivery-radius check (10km). Compute the straight-line distance from
-  // the restaurant — prefer the value stored on the address (it was
-  // computed at geocode time and may be more accurate than re-running
-  // haversine on rounded lat/lng), fall back to a live calculation.
-  const distKm =
-    address.distanceKm ?? distanceFromRestaurant(address.latitude, address.longitude)
-  if (!isDistanceServiceable(distKm)) {
+  // Delivery-radius + plausibility check.
+  //
+  // SECURITY: ALWAYS recompute the distance from address.latitude/longitude
+  // server-side. NEVER trust the stored address.distanceKm field. The stored
+  // value was written by the address-save endpoint (which now also recomputes
+  // server-side), but if an OLD address was saved before the fix landed, its
+  // stored distanceKm could still be 0.00 (the AB-2026-0005 root cause).
+  // Recomputing here is the final line of defense against that historical
+  // bad data.
+  const computedDistance = distanceFromRestaurant(address.latitude, address.longitude)
+  if (!isDistanceServiceable(computedDistance)) {
     return NextResponse.json(
       {
-        error: `Sorry, we only deliver within ${process.env.DELIVERY_RADIUS_KM ?? 10} km of the restaurant. Your address is ${distKm.toFixed(2)} km away.`,
+        error: `Sorry, we only deliver within ${process.env.DELIVERY_RADIUS_KM ?? 10} km of the restaurant. Your address is ${computedDistance.toFixed(2)} km away.`,
       },
       { status: 400 }
     )
   }
+
+  // Use the server-computed distance as the source of truth. We deliberately
+  // ignore `address.distanceKm` here so that any stale/zero value stored on
+  // an old address cannot bypass the fee recomputation.
+  const distKm = computedDistance
 
   // Fetch live menu items (re-validate price/availability server-side).
   // Fetch ALL items in the cart (not just isAvailable=true) so we can
@@ -173,12 +182,17 @@ export async function POST(req: NextRequest) {
   // a malicious client cannot bypass eligibility, the free-delivery override,
   // or send a custom charge.
   //
-  // Step 0: service radius (already checked above — non-serviceable addresses
-  //         are rejected before reaching here)
-  // Step 1: eligibility (₹200 min, ₹800 min for 7km+) — if not eligible,
-  //         return 400 with the block message. Never reach order.create().
-  // Step 2: charge calculation (₹20-₹70 scaled by distance, rounded to ₹5;
-  //         ₹0 if subtotal >= ₹2000)
+  // Step 0:  Plausibility floor (distance < 0.05 km → reject). Implemented
+  //          inside computeDeliveryCharge — runs BEFORE the 1km clamp would
+  //          mask a 0 / near-0 distance. Forces the customer back to the map
+  //          screen to re-pick their location. This is the fix for the
+  //          AB-2026-0005 root cause.
+  // Step 0b: Service radius (10km). Already checked above — non-serviceable
+  //          addresses are rejected before reaching here.
+  // Step 1:  Eligibility (₹200 min, ₹800 min for 7km+) — if not eligible,
+  //          return 400 with the block message. Never reach order.create().
+  // Step 2:  Charge calculation (₹20-₹70 scaled by distance, rounded to ₹5;
+  //          ₹0 if subtotal >= ₹2000)
   //
   // Bill breakdown:
   //   itemTotal   = sum(item.price * qty)
@@ -189,10 +203,15 @@ export async function POST(req: NextRequest) {
   //   totalAmount = itemTotal + deliveryFee
   const deliveryCalc = computeDeliveryCharge(distKm, itemTotal)
 
-  // Step 1 enforcement — hard-block ineligible orders server-side
+  // Step 0 / Step 1 enforcement — hard-block ineligible orders server-side.
+  // This catches the BELOW_MIN_VALID case (pin never moved) as well as the
+  // regular eligibility cases.
   if (!deliveryCalc.eligible) {
     return NextResponse.json(
-      { error: deliveryCalc.message },
+      {
+        error: deliveryCalc.message,
+        code: deliveryCalc.reason,
+      },
       { status: 400 }
     )
   }

@@ -13,16 +13,42 @@ import {
   ArrowRight,
   AlertCircle,
   Clock,
+  AlertTriangle,
 } from 'lucide-react'
 import { useApp } from '@/store/app'
 import { useCart } from '@/store/cart'
 import { useAuth } from '@/components/providers/auth-provider'
 import { rupees } from '@/lib/format'
 import { PAYMENT_MODES, RESTAURANT } from '@/lib/constants'
-import { deliveryChargeForDistance, checkOrderEligibility, FREE_DELIVERY_OVERRIDE } from '@/lib/delivery'
+import { deliveryChargeForDistance, checkOrderEligibility, FREE_DELIVERY_OVERRIDE, MIN_VALID_DISTANCE_KM } from '@/lib/delivery'
+import { isPlausibleCustomerLocation } from '@/lib/geo'
 import type { Address } from '@/lib/types'
 import { toast } from 'sonner'
 import type { Order } from '@/lib/types'
+
+/**
+ * Whether a saved address is "bad" — i.e. its coordinates match the restaurant's
+ * or its distance is below the plausibility floor. Such addresses were likely
+ * created before the GPS-required fix landed (the AB-2026-0005 root cause) and
+ * MUST be re-picked before checkout is allowed.
+ *
+ * Returns a short reason string for the UI banner; null if the address is good.
+ */
+function badAddressReason(a: Address): string | null {
+  if (a.latitude === RESTAURANT.lat && a.longitude === RESTAURANT.lng) {
+    return 'This saved address has the restaurant\'s coordinates. Please re-pick your delivery location.'
+  }
+  if (a.distanceKm == null) {
+    return 'This saved address has no recorded distance. Please re-pick your delivery location.'
+  }
+  if (a.distanceKm < MIN_VALID_DISTANCE_KM) {
+    return `This saved address shows a distance of ${a.distanceKm.toFixed(4)} km — which means the location pin was never moved off the restaurant. Please re-pick your delivery location.`
+  }
+  if (!isPlausibleCustomerLocation(a.latitude, a.longitude)) {
+    return 'This saved address has invalid coordinates. Please re-pick your delivery location.'
+  }
+  return null
+}
 
 export function CheckoutView() {
   const back = useApp((s) => s.back)
@@ -88,6 +114,12 @@ export function CheckoutView() {
     addresses.find((a) => a.isDefault) ||
     null
 
+  // Detect "bad" saved addresses — ones whose lat/lng match the restaurant's
+  // (created before the GPS-required fix landed; AB-2026-0005 root cause).
+  // Block checkout and force the customer to re-pick the location.
+  const badAddressReasonText = chosen ? badAddressReason(chosen) : null
+  const isBadAddress = badAddressReasonText != null
+
   useEffect(() => {
     if (authLoading || !profile || profile.phone?.trim()) return
     try {
@@ -107,7 +139,12 @@ export function CheckoutView() {
   // even when the order is below the minimum threshold. The fee is a
   // function of DISTANCE only. The minimum only affects whether the Place
   // Order button is enabled and whether the block banner is shown.
-  const distanceKm = chosen?.distanceKm ?? null
+  //
+  // If the saved address is BAD (lat/lng == restaurant, distance < 0.05 km,
+  // etc.), we treat distance as unknown — we do NOT compute a fee from the
+  // bad distance (which would yield ₹20 — the bug). The customer is forced
+  // to re-pick their location before they see a fee.
+  const distanceKm = chosen && !isBadAddress ? chosen.distanceKm : null
   const eligibility =
     distanceKm != null ? checkOrderEligibility(distanceKm, subtotal) : null
   const isBlocked = eligibility != null && !eligibility.eligible
@@ -137,6 +174,14 @@ export function CheckoutView() {
     }
     if (!chosen) {
       toast.error('Please choose a delivery address')
+      setView('location')
+      return
+    }
+    // Hard-block checkout if the chosen address is "bad" (lat/lng match the
+    // restaurant, distance < 0.05 km, NULL distance, etc.). Force the
+    // customer to re-pick their location.
+    if (isBadAddress) {
+      toast.error(badAddressReasonText ?? 'Please re-pick your delivery location.')
       setView('location')
       return
     }
@@ -203,9 +248,9 @@ export function CheckoutView() {
             Delivery Address
           </h2>
           {chosen ? (
-            <div className="rounded-2xl border border-border/60 bg-card p-3 shadow-sm">
+            <div className={`rounded-2xl border p-3 shadow-sm ${isBadAddress ? 'border-red-300 bg-red-50' : 'border-border/60 bg-card'}`}>
               <div className="flex items-start gap-2">
-                <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-brand" />
+                <MapPin className={`mt-0.5 h-5 w-5 shrink-0 ${isBadAddress ? 'text-red-600' : 'text-brand'}`} />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-bold text-foreground">
                     {chosen.label ?? 'Address'}
@@ -214,7 +259,7 @@ export function CheckoutView() {
                     {chosen.houseFlat}, {chosen.streetArea}, {chosen.city} - {chosen.pincode}
                   </p>
                   {chosen.distanceKm != null && (
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    <p className={`mt-0.5 text-[11px] ${isBadAddress ? 'font-bold text-red-700' : 'text-muted-foreground'}`}>
                       {chosen.distanceKm.toFixed(2)} km from restaurant
                     </p>
                   )}
@@ -232,6 +277,25 @@ export function CheckoutView() {
               <span className="text-sm text-muted-foreground">Add a delivery address to proceed</span>
               <ArrowRight className="h-4 w-4 text-brand" />
             </button>
+          )}
+
+          {/* Bad-address banner — shown when the chosen address has bad
+              coordinates (lat/lng == restaurant, distance < 0.05 km, NULL
+              distance, etc.). Customer must re-pick before checking out. */}
+          {isBadAddress && badAddressReasonText && (
+            <div className="mt-2 flex items-start gap-2 rounded-2xl border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+              <div className="flex-1">
+                <p className="font-bold">Saved location is invalid</p>
+                <p className="mt-0.5 text-xs leading-relaxed">{badAddressReasonText}</p>
+                <button
+                  onClick={() => setView('location')}
+                  className="mt-2 inline-flex items-center gap-1 rounded-md bg-red-600 px-3 py-1.5 text-[11px] font-bold text-white shadow-sm"
+                >
+                  <MapPin className="h-3 w-3" /> Re-pick location
+                </button>
+              </div>
+            </div>
           )}
         </section>
 
@@ -357,7 +421,7 @@ export function CheckoutView() {
         )}
         <button
           onClick={placeOrder}
-          disabled={placing || authLoading || !profile?.phone?.trim() || !chosen || lines.length === 0 || isBlocked || !isAcceptingOrders || hasOutOfStockItems}
+          disabled={placing || authLoading || !profile?.phone?.trim() || !chosen || lines.length === 0 || isBlocked || !isAcceptingOrders || hasOutOfStockItems || isBadAddress}
           className="flex w-full items-center justify-between gap-3 rounded-xl bg-brand px-5 py-3.5 text-brand-foreground shadow-md transition active:scale-[0.99] disabled:opacity-50"
         >
           <span className="flex items-center gap-2 text-sm font-bold">
@@ -368,6 +432,8 @@ export function CheckoutView() {
               ? 'Out of stock items'
               : !isAcceptingOrders
               ? 'Orders paused'
+              : isBadAddress
+              ? 'Re-pick location to continue'
               : isBlocked
               ? 'Checkout blocked'
               : paymentMode === 'UPI'

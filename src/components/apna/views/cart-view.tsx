@@ -4,16 +4,38 @@ import { authedFetch } from '@/components/providers/providers'
 import { useQuery } from '@tanstack/react-query'
 import Image from 'next/image'
 import { motion } from 'framer-motion'
-import { ArrowLeft, ArrowRight, Plus, MapPin, ShieldCheck, ShoppingBag, UtensilsCrossed, Truck } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Plus, MapPin, ShieldCheck, ShoppingBag, UtensilsCrossed, Truck, AlertTriangle } from 'lucide-react'
 import { useApp } from '@/store/app'
 import { useCart } from '@/store/cart'
 import { useAuth } from '@/components/providers/auth-provider'
 import { QtyStepper } from '@/components/apna/qty-stepper'
 import { rupees } from '@/lib/format'
 import { RESTAURANT } from '@/lib/constants'
-import { deliveryChargeForDistance, checkOrderEligibility, remainingForFreeDelivery, MIN_ORDER_SUBTOTAL, FAR_DISTANCE_THRESHOLD_KM, FAR_MIN_ORDER_SUBTOTAL, FREE_DELIVERY_OVERRIDE } from '@/lib/delivery'
+import { deliveryChargeForDistance, checkOrderEligibility, remainingForFreeDelivery, MIN_ORDER_SUBTOTAL, FAR_DISTANCE_THRESHOLD_KM, FAR_MIN_ORDER_SUBTOTAL, FREE_DELIVERY_OVERRIDE, MIN_VALID_DISTANCE_KM } from '@/lib/delivery'
+import { isPlausibleCustomerLocation } from '@/lib/geo'
 import type { Address } from '@/lib/types'
 import { toast } from 'sonner'
+
+/**
+ * Whether a saved address is "bad" — same logic as checkout-view.tsx. Kept as
+ * a local helper (not lifted into lib) because the cart screen has a slightly
+ * different message tone ("Change address before checking out" vs "Re-pick").
+ */
+function badAddressReason(a: Address): string | null {
+  if (a.latitude === RESTAURANT.lat && a.longitude === RESTAURANT.lng) {
+    return 'This saved address has the restaurant\'s coordinates. Please re-pick your delivery location.'
+  }
+  if (a.distanceKm == null) {
+    return 'This saved address has no recorded distance. Please re-pick your delivery location.'
+  }
+  if (a.distanceKm < MIN_VALID_DISTANCE_KM) {
+    return `This saved address shows a distance of ${a.distanceKm.toFixed(4)} km — which means the location pin was never moved off the restaurant. Please re-pick your delivery location.`
+  }
+  if (!isPlausibleCustomerLocation(a.latitude, a.longitude)) {
+    return 'This saved address has invalid coordinates. Please re-pick your delivery location.'
+  }
+  return null
+}
 
 export function CartView() {
   const back = useApp((s) => s.back)
@@ -72,6 +94,12 @@ export function CartView() {
     addresses.find((a) => a.isDefault) ||
     null
 
+  // Detect "bad" saved addresses (lat/lng == restaurant, distance < 0.05 km,
+  // NULL distance, etc.). The cart screen blocks checkout and shows a banner
+  // prompting the customer to re-pick the location.
+  const badAddressReasonText = chosen ? badAddressReason(chosen) : null
+  const isBadAddress = badAddressReasonText != null
+
   // === FINAL delivery-pricing system ===
   // Same logic as the backend (src/lib/delivery.ts). The server is the
   // source of truth for the stored charge, but we mirror it here so the
@@ -82,7 +110,10 @@ export function CartView() {
   // function of DISTANCE only — it doesn't depend on whether the minimum
   // is met. The minimum only affects whether the Place Order button is
   // enabled and whether the nudge banner is shown.
-  const distanceKm = chosen?.distanceKm ?? null
+  //
+  // If the saved address is BAD, we treat distance as unknown — we do NOT
+  // compute a fee from the bad distance (which would yield ₹20 — the bug).
+  const distanceKm = chosen && !isBadAddress ? chosen.distanceKm : null
   const eligibility =
     distanceKm != null ? checkOrderEligibility(distanceKm, subtotal) : null
   const isBlocked = eligibility != null && !eligibility.eligible
@@ -113,6 +144,13 @@ export function CartView() {
     // the out-of-stock item(s) before proceeding.
     if (hasOutOfStockItems) {
       toast.error('Some items in your cart are out of stock. Please remove them to proceed.')
+      return
+    }
+    // Block checkout if the chosen address is "bad" — the customer must
+    // re-pick their location on the map screen before proceeding.
+    if (isBadAddress) {
+      toast.error(badAddressReasonText ?? 'Please re-pick your delivery location.')
+      setView('location')
       return
     }
     if (!chosen) {
@@ -176,14 +214,18 @@ export function CartView() {
               if (profile) setView('location')
               else goToLogin('cart')
             }}
-            className="flex items-start gap-3 rounded-2xl border border-brand/20 bg-brand-softer p-3 text-left"
+            className={`flex items-start gap-3 rounded-2xl border p-3 text-left ${
+              isBadAddress
+                ? 'border-red-300 bg-red-50'
+                : 'border-brand/20 bg-brand-softer'
+            }`}
           >
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white shadow-sm">
-              <MapPin className="h-5 w-5 text-brand" />
+              <MapPin className={`h-5 w-5 ${isBadAddress ? 'text-red-600' : 'text-brand'}`} />
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {chosen ? 'Delivering to' : 'Add address to proceed'}
+                {chosen ? (isBadAddress ? 'Saved location is invalid' : 'Delivering to') : 'Add address to proceed'}
               </span>
               <span className="block text-sm font-bold text-foreground">
                 {chosen ? `${chosen.houseFlat}, ${chosen.streetArea}` : 'No address selected yet'}
@@ -195,11 +237,32 @@ export function CartView() {
               </span>
             </span>
             {chosen ? (
-              <span className="text-xs font-semibold text-brand">Change</span>
+              <span className={`text-xs font-semibold ${isBadAddress ? 'text-red-600' : 'text-brand'}`}>
+                {isBadAddress ? 'Re-pick' : 'Change'}
+              </span>
             ) : (
               <ArrowRight className="h-4 w-4 text-brand" />
             )}
           </button>
+
+          {/* Bad-address banner — shown when the chosen address has bad
+              coordinates (lat/lng == restaurant, distance < 0.05 km, NULL
+              distance, etc.). Customer must re-pick before checking out. */}
+          {isBadAddress && badAddressReasonText && (
+            <div className="flex items-start gap-2 rounded-2xl border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+              <div className="flex-1">
+                <p className="font-bold">Saved location is invalid</p>
+                <p className="mt-0.5 text-xs leading-relaxed">{badAddressReasonText}</p>
+                <button
+                  onClick={() => setView('location')}
+                  className="mt-2 inline-flex items-center gap-1 rounded-md bg-red-600 px-3 py-1.5 text-[11px] font-bold text-white shadow-sm"
+                >
+                  <MapPin className="h-3 w-3" /> Re-pick location
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Cart items */}
           <section>
@@ -359,25 +422,35 @@ export function CartView() {
       {/* Sticky checkout bar */}
       {lines.length > 0 && (
         <div className="sticky bottom-0 z-20 border-t border-border bg-background px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
-          {hasOutOfStockItems && (
+          {(hasOutOfStockItems || isBadAddress) && (
             <p className="mb-2 rounded-lg bg-red-50 px-3 py-1.5 text-center text-xs font-bold text-red-600">
-              Remove out-of-stock items to proceed
+              {hasOutOfStockItems
+                ? 'Remove out-of-stock items to proceed'
+                : 'Re-pick your delivery location to proceed'}
             </p>
           )}
           <button
             onClick={checkout}
-            disabled={hasOutOfStockItems}
+            disabled={hasOutOfStockItems || isBadAddress}
             className="flex w-full items-center justify-between gap-3 rounded-xl bg-brand px-5 py-3.5 text-brand-foreground shadow-md transition active:scale-[0.99] disabled:opacity-50"
           >
             <span className="flex flex-col items-start">
               <span className="text-[11px] font-medium uppercase tracking-wide opacity-80">
-                {hasOutOfStockItems ? 'Out of stock items in cart' : chosen ? `${chosen.houseFlat}, ${chosen.city}` : 'Select address'}
+                {hasOutOfStockItems
+                  ? 'Out of stock items in cart'
+                  : isBadAddress
+                  ? 'Saved location is invalid'
+                  : chosen
+                  ? `${chosen.houseFlat}, ${chosen.city}`
+                  : 'Select address'}
               </span>
-              <span className="text-base font-extrabold">{rupees(total)} · {lines.reduce((n, l) => n + l.quantity, 0)} items</span>
+              <span className="text-base font-extrabold">
+                {isBadAddress ? 'Tap to re-pick location' : `${rupees(total)} · ${lines.reduce((n, l) => n + l.quantity, 0)} items`}
+              </span>
             </span>
             <span className="flex items-center gap-1 text-sm font-bold">
-              {hasOutOfStockItems ? 'Blocked' : profile ? 'Place Order' : 'Sign in to order'}
-              {!hasOutOfStockItems && <ArrowRight className="h-4 w-4" />}
+              {hasOutOfStockItems || isBadAddress ? 'Blocked' : profile ? 'Place Order' : 'Sign in to order'}
+              {!(hasOutOfStockItems || isBadAddress) && <ArrowRight className="h-4 w-4" />}
             </span>
           </button>
         </div>

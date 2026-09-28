@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getSupabaseForUser } from '@/lib/supabase-server'
+import { recomputeDistanceFromRestaurant, isPlausibleCustomerLocation } from '@/lib/geo'
+import { validateDistance } from '@/lib/delivery'
 
 async function getCustomer(req: Request) {
   const supabase = await getSupabaseForUser(req)
@@ -37,6 +39,14 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/addresses — create a new address (marks default if first or flag set)
+//
+// SECURITY: Never trust the client's `distanceKm`. Always recompute from the
+// supplied lat/lng server-side. The client could be:
+//   - a malicious user sending a custom `distanceKm: 0` to get free delivery
+//   - a buggy client whose geolocation failed silently and left the pin on
+//     the restaurant's coordinates (the AB-2026-0005 root cause)
+// In either case, the server-side recompute + plausibility validation catches
+// it before the address is persisted.
 export async function POST(req: NextRequest) {
   const customer = await getCustomer(req)
   if (!customer) {
@@ -52,13 +62,49 @@ export async function POST(req: NextRequest) {
     pincode,
     latitude,
     longitude,
-    distanceKm,
+    // NOTE: `distanceKm` from the client is intentionally ignored. We recompute
+    // it below from `latitude`/`longitude` server-side. Keeping the field in the
+    // destructure would be misleading — it has no effect.
     isDefault,
   } = body ?? {}
 
   if (!houseFlat || !streetArea || !city || !pincode || latitude == null || longitude == null) {
     return NextResponse.json(
       { error: 'All address fields are required.' },
+      { status: 400 }
+    )
+  }
+
+  // === SERVER-SIDE COORDINATE VALIDATION ===
+  // Parse and validate the supplied lat/lng.
+  const lat = Number(latitude)
+  const lng = Number(longitude)
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return NextResponse.json(
+      { error: 'Invalid coordinates. Please re-pick your location on the map.', code: 'INVALID_COORDS' },
+      { status: 400 }
+    )
+  }
+
+  // Plausibility check — reject if the pin is at the restaurant (the customer
+  // never moved it, geolocation failed silently, etc.).
+  if (!isPlausibleCustomerLocation(lat, lng)) {
+    return NextResponse.json(
+      {
+        error:
+          'Saved location appears to be at the restaurant. Please move the pin to your actual delivery location.',
+        code: 'BELOW_MIN_VALID',
+      },
+      { status: 400 }
+    )
+  }
+
+  // === SERVER-SIDE DISTANCE RECOMPUTE (single source of truth) ===
+  const computedDistanceKm = recomputeDistanceFromRestaurant(lat, lng)
+  const distanceValidation = validateDistance(computedDistanceKm)
+  if (!distanceValidation.ok) {
+    return NextResponse.json(
+      { error: distanceValidation.message, code: distanceValidation.reason },
       { status: 400 }
     )
   }
@@ -82,9 +128,10 @@ export async function POST(req: NextRequest) {
       landmark,
       city,
       pincode,
-      latitude,
-      longitude,
-      distanceKm,
+      latitude: lat,
+      longitude: lng,
+      // SERVER-COMPUTED — never the client's value.
+      distanceKm: Number(computedDistanceKm.toFixed(4)),
       isDefault: makeDefault,
     },
   })
