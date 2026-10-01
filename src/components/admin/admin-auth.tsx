@@ -40,8 +40,17 @@ export function AdminAuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const logout = useCallback(async () => {
-    // clear cookie by setting maxAge 0
-    document.cookie = 'ab_admin=; path=/; max-age=0'
+    // Call the server-side logout endpoint so the cookie is cleared with
+    // a proper Set-Cookie header (httpOnly cookies can't be reliably cleared
+    // from client-side JS — the fallback `document.cookie = 'ab_admin=; ...'`
+    // only clears the non-httpOnly copy if any). The server response sets
+    // maxAge=0 which causes the browser to delete the cookie.
+    try {
+      await fetch('/api/admin/logout', { method: 'POST' })
+    } catch {
+      // Even if the server call fails, fall back to the client-side clear.
+      document.cookie = 'ab_admin=; path=/; max-age=0'
+    }
     setAuthed(false)
     router.refresh()
   }, [router])
